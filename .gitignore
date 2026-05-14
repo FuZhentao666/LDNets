@@ -1,8 +1,25 @@
 data
+data.zip
+
+*.png
+logs/
+runs/
+checkpoints/
 
 *.pyc
 __pycache__/
+.ipynb_checkpoints/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
 
 build/
 dist/
 *.egg-info
+
+.env
+.venv/
+venv/
+
+.DS_Store
