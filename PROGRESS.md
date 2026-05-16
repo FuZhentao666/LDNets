@@ -558,3 +558,240 @@ Case 3 controls:
 ### Interpretation
 
 The current Case 2/3 runs are controlled, reproducible GPU runs, not full author-budget runs. They keep the model, data split, Adam stage, and train/valid sampling defaults, but reduce BFGS from the paper scripts (`10000`/`5000`) to `500`. For publication-grade reproduction, rerun the same commands with the author BFGS defaults and keep chunked evaluation enabled.
+
+## 2026-05-16 Stage 1 JEPA-LDNet Implementation
+
+Stage 1 has started from the `refer.md`/`AGENT.md` direction: convert LDNet from a fixed-zero-latent reconstruction surrogate into a sparse-observation, latent-rollout, JEPA-constrained scientific world model.
+
+### Code Added
+
+- `src/models.py`
+  - `PointSetEncoder`: DeepSets-style encoder for sparse coordinate/value observations.
+  - `LatentTransition`: Euler transition module matching the original `NNdyn` structure.
+  - `ContinuousDecoder`: meshless coordinate-query decoder matching the original `NNrec` role.
+  - `JEPAPredictor`: predicts target embeddings from rollout latent states.
+  - `JEPALDNet`: wires `E_phi`, `T_theta`, `D_omega`, `E_bar`, and `P_psi`.
+- `src/losses.py`
+  - reconstruction MSE, JEPA feature MSE with stop-gradient target, latent smoothness, and kernel L2 helpers.
+- `src/metrics.py`
+  - denormalized NRMSE, Pearson dissimilarity, horizon-wise NRMSE, and parameter count.
+- `src/TestCase_1_jepa.py`
+  - first Stage 1 runner for ADR Case `1a/1b/1c`.
+  - supports sparse sensors, context steps, target point sampling, JEPA warmup/ramp, EMA target encoder, metrics/config JSON, and figures.
+- `docs/stage1_jepa_image2_prompts.md`
+  - image-2 prompts and commands for the final architecture/training flow figures.
+- `docs/stage1_jepa_image2_architecture_prompt.txt`
+- `docs/stage1_jepa_image2_training_prompt.txt`
+  - direct prompt files for the image-2 CLI `--prompt-file` commands.
+- `docs/figures/make_stage1_diagrams.py`
+  - deterministic local fallback generator for the architecture and training-flow figures.
+
+### Algorithm Interfaces
+
+Core tensors:
+
+- `X_obs: [B,Tc,No,dx]`
+- `Y_obs: [B,Tc,No,dy]`
+- context features in the runner: `[x, t, y] -> [B,Tc*No,dx+1+dy]`
+- `z0: [B,dz]`
+- rollout states: `z_1:T: [B,T,dz]`
+- full/query coordinates: `X_query: [B,T,Nq,dx]`
+- predicted field: `Y_hat: [B,T,Nq,dy]`
+- target patch features: `[B,K,Np,dx+1+dy]`
+- target embedding: `h_target: [B,K,dh]`
+- predicted embedding: `h_pred: [B,K,dh]`
+
+Loss:
+
+```text
+L = lambda_rec * MSE(Y_hat, Y)
+  + lambda_jepa * MSE(P_psi(z), stopgrad(E_bar(target)))
+  + lambda_smooth * mean(||z_{t+1} - z_t||^2)
+```
+
+`lambda_dyn` is intentionally set to `0.0` in the first implementation because comparing a transition output against the same rollout transition would be tautological. A nonzero dynamics loss should only be added after implementing per-time sensor latent targets.
+
+### Diagrams
+
+Generated local fallback diagrams:
+
+- `docs/figures/stage1_jepa_ldnet_architecture.png`
+- `docs/figures/stage1_jepa_ldnet_architecture.svg`
+- `docs/figures/stage1_jepa_ldnet_training_flow.png`
+- `docs/figures/stage1_jepa_ldnet_training_flow.svg`
+
+The actual image-2 generation path is documented in `docs/stage1_jepa_image2_prompts.md`, but was not executed because `OPENAI_API_KEY` is not set in the current Codex environment.
+
+### 2026-05-17 [SMOKE] Stage 1 JEPA-LDNet Case 1a
+
+- Commit: `e2ece79`
+- Git status at run time:
+
+```text
+M .gitignore
+M PROGRESS.md
+M refer.md
+?? AGENT.md
+?? docs/
+?? src/TestCase_1_jepa.py
+?? src/losses.py
+?? src/metrics.py
+?? src/models.py
+```
+
+- Agent/role: Codex execution with worker/reviewer subagents.
+- Start/end time: `2026-05-17 00:10:18 +0800` to `2026-05-17 00:10:30 +0800`
+- GPU: `CUDA_VISIBLE_DEVICES=0`, TensorFlow physical GPU `/physical_device:GPU:0`
+- Command:
+
+```bash
+env -u PYTHONPATH \
+  CUDA_VISIBLE_DEVICES=0 \
+  LD_LIBRARY_PATH=/home/fzt/miniconda3/envs/ldnets-py39/lib:/opt/ros/humble/opt/rviz_ogre_vendor/lib:/opt/ros/humble/lib/x86_64-linux-gnu:/opt/ros/humble/lib \
+  MPLCONFIGDIR=/tmp/matplotlib-ldnets \
+  /home/fzt/miniconda3/envs/ldnets-py39/bin/python src/TestCase_1_jepa.py \
+  --case 1a \
+  --adam-epochs 5 \
+  --bfgs-epochs 0 \
+  --seed 0 \
+  --sensor-ratio 0.2 \
+  --batch-samples 25 \
+  --warmup-epochs 0 \
+  --jepa-ramp-epochs 1 \
+  --lambda-rec 1.0 \
+  --lambda-jepa 0.1 \
+  --lambda-smooth 1e-4 \
+  --ema-decay 0.99 \
+  --output-dir runs/jepa/case1a/smoke5_seed0_sr020
+```
+
+- Output dir: `runs/jepa/case1a/smoke5_seed0_sr020`
+- Dataset split: ADR Case 1a original split, train `0:100`, valid `100:200`, test `200:300`.
+- Model:
+  - latent dimension `2`
+  - embedding dimension `32`
+  - condition dimension `3`
+  - trainable parameters `8226`
+- JEPA config:
+  - sensor ratio `0.2`, fixed by seed `0`
+  - context steps `1`
+  - prediction horizon `1`
+  - target points `32`
+  - `lambda_rec=1.0`
+  - `lambda_jepa=0.1`
+  - `lambda_dyn=0.0`
+  - `lambda_smooth=1e-4`
+  - warmup `0`, JEPA ramp `1`
+  - EMA decay `0.99`
+- Training budget: Adam `5`, BFGS `0`. This validates the Stage 1 code path only; it is not a formal reproduction or improvement result.
+- Evaluation mode:
+  - denormalized full-field metrics
+  - `--batch-samples 25` is equivalent full-data loss/prediction chunking by sample count, not sample subsampling.
+- Metrics:
+  - full-field NRMSE: `2.412e-01`
+  - Pearson dissimilarity: `9.166e-01`
+  - few-sensor NRMSE: `2.563e-01`
+  - validation JEPA feature MSE: `1.465e-02`
+  - validation latent smoothness: `4.367e-03`
+  - validation reconstruction MSE: `2.589e-01`
+  - final train loss: `2.372e-01`
+  - final valid loss: `2.603e-01`
+  - runtime: `11.9 s`
+  - peak TensorFlow GPU memory: `492168448` bytes
+  - parameter count: `8226`
+- Artifacts:
+  - `runs/jepa/case1a/smoke5_seed0_sr020/config.json`
+  - `runs/jepa/case1a/smoke5_seed0_sr020/metrics.json`
+  - `runs/jepa/case1a/smoke5_seed0_sr020/loss.png`
+  - `runs/jepa/case1a/smoke5_seed0_sr020/comparison.png`
+- Interpretation:
+  - GPU execution, sparse sensor encoding, JEPA target encoding, EMA update, full-field decoding, metrics, and figure output all work.
+  - Error is high because this is only 5 Adam epochs. Do not compare this smoke metric against original LDNet reproduction metrics.
+- Next action:
+  - Run Case 1a formal Stage 1 screening with `Adam 200`, `BFGS 0`, sensor ratios `1.0/0.5/0.2/0.1/0.05`, warmup `20`, JEPA ramp `80`.
+
+### 2026-05-17 [FORMAL] Stage 1 JEPA-LDNet Case 1a Sensor Sweep
+
+- Goal: formal sparse-sensor screening for ADR Case `1a`.
+- Agent workflow:
+  - Worker agent prepared/executed duplicate verification runs and then stopped after main sweep completion.
+  - Reviewer agent checked that `src/TestCase_1_jepa.py` supports the requested controls and that Case 1a sensor ratios map to `100/50/20/10/5` sensors.
+- GPU execution:
+  - Physical GPUs were selected with `CUDA_VISIBLE_DEVICES=0/1`.
+  - TensorFlow records the visible card as `/physical_device:GPU:0` inside each process, so `config.json` is not a physical GPU id.
+  - `nvidia-smi` after completion showed no remaining training processes and both RTX 4090 cards idle.
+- Commit recorded in run configs: `e2ece79`.
+- Formal output root: `runs/jepa/case1a/formal_sensor_sweep`.
+- Formal result directories use the suffix `_adam200`; duplicate verification directories without that suffix are not part of the main result table.
+
+Command template:
+
+```bash
+env -u PYTHONPATH \
+  CUDA_VISIBLE_DEVICES=<0-or-1> \
+  LD_LIBRARY_PATH=/home/fzt/miniconda3/envs/ldnets-py39/lib:/opt/ros/humble/opt/rviz_ogre_vendor/lib:/opt/ros/humble/lib/x86_64-linux-gnu:/opt/ros/humble/lib \
+  MPLCONFIGDIR=/tmp/matplotlib-ldnets \
+  /home/fzt/miniconda3/envs/ldnets-py39/bin/python src/TestCase_1_jepa.py \
+  --case 1a \
+  --adam-epochs 200 \
+  --bfgs-epochs 0 \
+  --seed 0 \
+  --sensor-ratio <ratio> \
+  --batch-samples 25 \
+  --warmup-epochs 20 \
+  --jepa-ramp-epochs 80 \
+  --lambda-rec 1.0 \
+  --lambda-jepa 0.1 \
+  --lambda-smooth 1e-4 \
+  --ema-decay 0.99 \
+  --output-dir runs/jepa/case1a/formal_sensor_sweep/<run-name>
+```
+
+Fixed settings:
+
+- Dataset split: ADR Case 1a original split, train `0:100`, valid `100:200`, test `200:300`.
+- Optimizer budget: Adam `200`, BFGS `0`.
+- JEPA schedule: warmup `20`, ramp `80`.
+- Loss weights: `lambda_rec=1.0`, `lambda_jepa=0.1`, `lambda_dyn=0.0`, `lambda_smooth=1e-4`.
+- EMA decay: `0.99`.
+- `--batch-samples 25` is chunking only; it does not subsample the dataset.
+
+Formal results:
+
+| Run | Ratio | Sensors | NRMSE | Pearson dissim. | Sensor NRMSE | Valid loss | Valid rec MSE | Valid JEPA MSE | Runtime |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `sr100_seed0_adam200` | `1.00` | `100` | `2.403e-02` | `5.385e-03` | `2.403e-02` | `2.892e-03` | `2.868e-03` | `2.454e-04` | `75.3 s` |
+| `sr050_seed0_adam200` | `0.50` | `50` | `3.211e-02` | `9.630e-03` | `3.231e-02` | `4.967e-03` | `4.933e-03` | `3.375e-04` | `82.6 s` |
+| `sr020_seed0_adam200` | `0.20` | `20` | `3.139e-02` | `9.202e-03` | `3.148e-02` | `4.645e-03` | `4.641e-03` | `4.454e-05` | `79.7 s` |
+| `sr010_seed0_adam200` | `0.10` | `10` | `3.240e-02` | `9.791e-03` | `3.437e-02` | `4.872e-03` | `4.867e-03` | `4.859e-05` | `72.8 s` |
+| `sr005_seed0_adam200` | `0.05` | `5` | `3.060e-02` | `8.748e-03` | `3.332e-02` | `4.363e-03` | `4.355e-03` | `7.787e-05` | `65.7 s` |
+
+Per-run artifacts:
+
+- `config.json`: command, arguments, start/end time, git commit/status, visible GPU devices, sensor indices, target indices.
+- `metrics.json`: NRMSE, Pearson dissimilarity, sensor NRMSE, validation loss components, elapsed seconds, TensorFlow GPU memory info, parameter count.
+- `loss.png`
+- `comparison.png`
+
+Reviewer final check:
+
+- The five formal `_adam200` directories all contain `config.json` and `metrics.json`.
+- For each formal run, `metrics.json.config` matches the same directory's `config.json`.
+- Case, seed, ratio, sensor count, Adam epochs, BFGS epochs, warmup, and ramp all match the requested sweep.
+- `git_status_short` is non-empty in the configs because this stage was run from a dirty worktree containing uncommitted Stage 1 implementation/docs. Keep this context when comparing future clean-commit reruns.
+- The runner does not yet write an explicit `run_status` field. Completion is inferred from existing `metrics.json`, `end_time`, and complete metric fields.
+
+Duplicate verification directories generated by the worker agent:
+
+- `runs/jepa/case1a/formal_sensor_sweep/sr100_seed0`
+- `runs/jepa/case1a/formal_sensor_sweep/sr050_seed0`
+- `runs/jepa/case1a/formal_sensor_sweep/sr020_seed0`
+
+These duplicate metrics match the same configuration family and are useful as sanity checks, but the main formal table above uses only the five `_adam200` directories for naming consistency.
+
+Interpretation:
+
+- Full sensors give the best Case 1a result in this sweep: NRMSE `2.403e-02`.
+- Sparse sensors remain stable: `5%` sensors still reached NRMSE `3.060e-02`, only modestly worse than `50%/20%/10%`.
+- The non-monotonic sparse trend (`5%` slightly better than `10%`) is plausible with a single seed and random sensor placement; do not over-interpret it without multi-seed repeats.
+- Next experimental step should be a multi-seed sensor-placement repeat for `0.05/0.10/0.20`, or a direct comparison against original LDNet under identical sensor subsets.

@@ -1,0 +1,22 @@
+Use case: scientific-educational
+Asset type: machine learning training workflow diagram
+Primary request: Create a complete training flow diagram for JEPA-LDNet.
+Style/medium: clean research workflow figure, vector-like raster diagram, white background, clear numbered stages.
+Composition/framing: vertical or circular workflow with five grouped phases.
+Text labels must be in English and exactly use these stage names:
+1. Load Normalized Field Data
+2. Sample Context Sensors
+3. Encode Latent State
+4. Roll Out Latent Dynamics
+5. Decode Query Field
+6. Build JEPA Targets
+7. Predict Target Embeddings
+8. Compute Total Loss
+9. Update Online Networks
+10. EMA Update Target Encoder
+11. Evaluate Metrics
+Include metric labels:
+NRMSE, Pearson Dissimilarity, Sensor NRMSE, Horizon-wise NRMSE.
+Include loss labels:
+L_rec, L_jepa, L_smooth.
+Constraints: no decorative background, no unrelated icons, no watermark, no dense paragraphs, keep text large and readable.

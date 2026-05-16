@@ -1,0 +1,15 @@
+Use case: scientific-educational
+Asset type: research paper architecture diagram
+Primary request: Create a clean technical architecture diagram for "JEPA-LDNet: Joint-Embedding Predictive Latent Dynamics Network".
+Style/medium: polished scientific paper figure, vector-like raster diagram, white background, crisp lines.
+Composition/framing: left-to-right architecture pipeline with grouped modules and arrows.
+Text labels must be in English and exactly use these module names:
+Sparse Observations, Observation Encoder E_phi, Initial Latent State z0, Latent Transition T_theta, Latent Rollout z_1:T, Continuous Decoder D_omega, Field Prediction Y_hat, Target Patches, EMA Target Encoder E_bar, Target Embedding h_target, Predictor P_psi, Predicted Embedding h_pred, Reconstruction Loss, JEPA Loss, EMA Update.
+Visual structure:
+- top branch: Sparse Observations -> Observation Encoder -> z0 -> Latent Transition -> Latent Rollout -> Continuous Decoder -> Field Prediction.
+- bottom branch: Target Patches -> EMA Target Encoder -> Target Embedding.
+- Predictor connects Latent Rollout to Predicted Embedding.
+- JEPA Loss compares Predicted Embedding and Target Embedding with stop-gradient on target.
+- Reconstruction Loss compares Field Prediction with Ground Truth Field.
+- EMA Update arrow updates Target Encoder from online encoder.
+Constraints: no decorative background, no 3D perspective, no icons unrelated to science, no watermark, no extra labels beyond the specified labels.
