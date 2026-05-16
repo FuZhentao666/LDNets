@@ -410,3 +410,151 @@ Formal Case 1 metrics:
 | 1c | 200 + 1800 | 25 | `2.059e-02` | `2.039e-02` | `1.175e-02` | `1.152e-02` |
 
 Conclusion: Case 1 reproduction is complete on the current server GPU setup. For later research changes, start from `src/TestCase_1.py` rather than the notebooks when running noninteractive experiments.
+
+## 2026-05-14 Case 2/3 GPU Reproduction
+
+Case 2 and Case 3 were converted from fixed author scripts into reusable command-line runners while preserving the author defaults. The scripts now write outputs under `runs/` instead of overwriting `src/TestCase2.png` or `src/TestCase3.png`.
+
+Updated scripts:
+
+- `src/TestCase_2.py`: Navier-Stokes 2D case.
+- `src/TestCase_3.py`: AP1D electrophysiology case.
+
+Both scripts configure TensorFlow `float64`, set GPU memory growth, use repository-root data paths, save loss/comparison figures, and write metrics JSON.
+
+### Command Template
+
+Use this pattern from the repository root:
+
+```bash
+env -u PYTHONPATH \
+  CUDA_VISIBLE_DEVICES=0 \
+  LD_LIBRARY_PATH=/home/fzt/miniconda3/envs/ldnets-py39/lib:/opt/ros/humble/opt/rviz_ogre_vendor/lib:/opt/ros/humble/lib/x86_64-linux-gnu:/opt/ros/humble/lib \
+  MPLCONFIGDIR=/tmp/matplotlib-ldnets \
+  /home/fzt/miniconda3/envs/ldnets-py39/bin/python src/TestCase_3.py \
+  --bfgs-epochs 500 \
+  --eval-batch-samples 10 \
+  --output-dir runs/case3/bfgs500_chunked
+```
+
+Case 2 command used:
+
+```bash
+env -u PYTHONPATH \
+  CUDA_VISIBLE_DEVICES=1 \
+  LD_LIBRARY_PATH=/home/fzt/miniconda3/envs/ldnets-py39/lib:/opt/ros/humble/opt/rviz_ogre_vendor/lib:/opt/ros/humble/lib/x86_64-linux-gnu:/opt/ros/humble/lib \
+  MPLCONFIGDIR=/tmp/matplotlib-ldnets \
+  /home/fzt/miniconda3/envs/ldnets-py39/bin/python src/TestCase_2.py \
+  --bfgs-epochs 500 \
+  --eval-point-batch 500 \
+  --output-dir runs/case2/bfgs500_chunked
+```
+
+### Case 3 Result
+
+Configuration:
+
+- Dataset split: train `0:100`, valid `100:200`, test `200:400`.
+- Author default model/training settings: `dt=1`, `dt_base=205`, `num_latent_states=12`, dynamics width `8`, reconstruction width `17`, Adam `200`, learning rate `1e-2`, train/valid `20` spatial points per time step.
+- Controlled run used `BFGS 500` instead of author default `5000` for this stage.
+- Test set was evaluated without point downsampling, using `--eval-batch-samples 10` to avoid an RTX 4090 + TensorFlow 2.8/cuBLAS xGEMV launch failure on one huge Dense call.
+
+Outputs:
+
+- `runs/case3/bfgs500_chunked/TestCase_3_metrics.json`
+- `runs/case3/bfgs500_chunked/TestCase_3_loss.png`
+- `runs/case3/bfgs500_chunked/TestCase_3_comparison.png`
+
+Metrics:
+
+| Case | Adam + BFGS | Eval chunk | NRMSE | Pearson dissimilarity | Final train loss | Final valid loss | Time |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 3 | 200 + 500 | 10 samples | `2.096e-02` | `2.339e-03` | `2.382e-03` | `5.472e-04` | `479.8 s` |
+
+Failed attempts before chunked evaluation:
+
+- Full Case 3 with author-style test evaluation reached BFGS training but was manually stopped once the old runner was known to be unsuitable.
+- `Adam 200 + BFGS 500` completed training but failed at full test Dense evaluation:
+
+```text
+Blas xGEMV launch failed : a.shape=[1,10120200,17]
+inputs=tf.Tensor(shape=(200, 501, 101, 17), dtype=float64)
+```
+
+- Reducing `--test-points 20` in the old evaluation path still failed:
+
+```text
+Blas xGEMV launch failed : a.shape=[1,2004000,17]
+inputs=tf.Tensor(shape=(200, 501, 20, 17), dtype=float64)
+```
+
+Conclusion: for Case 3 on this server, keep the training objective unchanged and use `--eval-batch-samples` for test prediction/metrics.
+
+### Case 2 Result
+
+Configuration:
+
+- Dataset split: train `T20_80samples.npy` first 80 samples, valid `T20_20samples.npy` first 20, test `T40_10samples.npy` first 10.
+- Author default model/training settings: `dt=0.2`, `dt_base=5.4`, `num_latent_states=1`, dynamics width `7`, reconstruction width `24`, Adam `200`, learning rate `1e-2`, train/valid `200` spatial points per time step.
+- Controlled run used `BFGS 500` instead of author default `10000`.
+- Test set was evaluated on the full grid, using `--eval-point-batch 500` to avoid very large Dense calls during post-training prediction.
+
+Outputs:
+
+- `runs/case2/bfgs500_chunked/TestCase_2_metrics.json`
+- `runs/case2/bfgs500_chunked/TestCase_2_loss.png`
+- `runs/case2/bfgs500_chunked/TestCase_2_comparison.png`
+
+Metrics:
+
+| Case | Adam + BFGS | Eval chunk | NRMSE | Pearson dissimilarity | Final train loss | Final valid loss | Time |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 2 | 200 + 500 | 500 points | `2.030e-02` | `9.335e-02` | `3.945e-03` | `4.618e-03` | `468.1 s` |
+
+Case 2 smoke test also passed:
+
+```bash
+env -u PYTHONPATH CUDA_VISIBLE_DEVICES=1 LD_LIBRARY_PATH=... MPLCONFIGDIR=/tmp/matplotlib-ldnets \
+  /home/fzt/miniconda3/envs/ldnets-py39/bin/python src/TestCase_2.py \
+  --train-samples 2 --valid-samples 2 --test-samples 1 \
+  --train-points 50 --valid-points 50 --test-points 100 \
+  --adam-epochs 1 --bfgs-epochs 0 --skip-figures \
+  --output-dir runs/case2_smoke
+```
+
+Smoke output: NRMSE `9.188e-02`, Pearson dissimilarity `1.135e+00`. This validates the NS data and GPU training path only; it is not a reproduction metric.
+
+### Adjustable Parameters
+
+Common training controls:
+
+- `--adam-epochs`: number of Adam steps. Author defaults are `200` for Case 2 and Case 3. Use `1` to `5` for smoke tests.
+- `--bfgs-epochs`: SciPy BFGS `maxiter`. Author defaults are Case 2 `10000`, Case 3 `5000`. Current controlled reproduction used `500` to keep runtime bounded.
+- `--learning-rate`: Adam learning rate, default `1e-2`.
+- `--seed`: NumPy and TensorFlow seed, default `0`. Keep this fixed when comparing model changes.
+- `CUDA_VISIBLE_DEVICES`: select GPU. Use one GPU per process to avoid TensorFlow reserving both 4090s.
+
+Case 2 controls:
+
+- `--train-samples`, `--valid-samples`, `--test-samples`: sample counts, defaults `80/20/10`.
+- `--train-points`, `--valid-points`: random spatial points per time step for training/validation, defaults `200/200`. Reducing these speeds training but changes the objective.
+- `--test-points`: optional test downsampling. Leave unset for full-grid metrics.
+- `--eval-point-batch`: point chunk size for test prediction only, default `1000`; current run used `500`.
+- `--dt`, `--dt-base`: time resampling and normalization. Defaults `0.2/5.4`; changing these changes the dynamical discretization.
+- `--num-latent-states`, `--dynamics-width`, `--reconstruction-width`: LDNet capacity controls.
+- `--weight-direction`, `--epsilon`: direction-loss weight and normalization epsilon.
+
+Case 3 controls:
+
+- `--train-start`, `--train-samples`, `--valid-start`, `--valid-samples`, `--test-start`, `--test-samples`: AP1D sample ranges; defaults reproduce the author split.
+- `--points-subsampling-rate`: AP loader grid stride, default `8`, giving 101 points before training subsampling.
+- `--time-steps`: number of raw time steps loaded, default `501`.
+- `--train-points`, `--valid-points`: random spatial points per time step for training/validation, defaults `20/20`.
+- `--test-points`: optional test downsampling. Leave unset for full test metrics.
+- `--eval-batch-samples`: sample chunk size for test prediction only, default `25`; current run used `10`.
+- `--alpha-reg`: kernel regularization weight, default `4.7e-3`.
+- `--num-latent-states`, `--dynamics-width`, `--reconstruction-width`: LDNet capacity controls.
+
+### Interpretation
+
+The current Case 2/3 runs are controlled, reproducible GPU runs, not full author-budget runs. They keep the model, data split, Adam stage, and train/valid sampling defaults, but reduce BFGS from the paper scripts (`10000`/`5000`) to `500`. For publication-grade reproduction, rerun the same commands with the author BFGS defaults and keep chunked evaluation enabled.
