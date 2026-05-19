@@ -2,7 +2,9 @@
 """JEPA-LDNet runner for ADR TestCase 1a/1b/1c."""
 
 import argparse
+import hashlib
 import json
+import os
 import subprocess
 import sys
 import time
@@ -78,6 +80,14 @@ def current_git_status():
         ).strip()
     except Exception:
         return "unknown"
+
+
+def command_text():
+    return " ".join([sys.executable] + sys.argv)
+
+
+def command_hash(command):
+    return hashlib.sha256(command.encode("utf-8")).hexdigest()[:16]
 
 
 def gpu_memory_info():
@@ -394,6 +404,7 @@ def run(args):
     start_time_text = time.strftime("%Y-%m-%d %H:%M:%S %z")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     gpu_names = configure_and_list_gpus()
+    cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "")
 
     config = CASE_CONFIGS[args.case]
     if args.adam_epochs is None:
@@ -502,15 +513,24 @@ def run(args):
 
     elapsed_seconds = time.time() - start_time
     end_time_text = time.strftime("%Y-%m-%d %H:%M:%S %z")
+    command = command_text()
     run_config = {
+        "run_status": "completed",
         "case": args.case,
-        "command": " ".join([sys.executable] + sys.argv),
+        "command": command,
+        "command_hash": command_hash(command),
         "start_time": start_time_text,
         "end_time": end_time_text,
+        "elapsed_seconds": elapsed_seconds,
         "args": vars(args) | {"output_dir": str(args.output_dir)},
         "git_commit": current_git_commit(),
         "git_status_short": current_git_status(),
+        "cuda_visible_devices": cuda_visible_devices,
         "gpu_devices": gpu_names,
+        "gpu_note": (
+            "TensorFlow reports devices after CUDA_VISIBLE_DEVICES remapping; "
+            "cuda_visible_devices records the requested physical GPU selection."
+        ),
         "sensor_indices": sensor_indices.tolist(),
         "target_indices": target_indices.tolist(),
         "target_time_indices": time_indices.tolist(),
@@ -537,6 +557,7 @@ def run(args):
         },
     }
     metrics_payload = {
+        "run_status": "completed",
         "case": args.case,
         "algorithm": "JEPA-LDNet",
         "nrmse": nrmse,

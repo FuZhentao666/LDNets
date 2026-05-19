@@ -795,3 +795,138 @@ Interpretation:
 - Sparse sensors remain stable: `5%` sensors still reached NRMSE `3.060e-02`, only modestly worse than `50%/20%/10%`.
 - The non-monotonic sparse trend (`5%` slightly better than `10%`) is plausible with a single seed and random sensor placement; do not over-interpret it without multi-seed repeats.
 - Next experimental step should be a multi-seed sensor-placement repeat for `0.05/0.10/0.20`, or a direct comparison against original LDNet under identical sensor subsets.
+
+### 2026-05-17 [FORMAL] Stage 1 JEPA-LDNet Remaining Case 1 Experiments
+
+Goal: finish the Stage 1 JEPA evidence chain after the first Case `1a` sensor sweep:
+
+- Case `1a` sparse sensor multi-seed repeat for ratios `0.20/0.10/0.05`.
+- Case `1a` formal ablation at ratio `0.20`.
+- Case `1b/1c` transfer sweeps at ratios `1.00/0.20/0.05`.
+
+Agent workflow:
+
+- Worker agent executed the training matrix on the two RTX 4090 GPUs.
+- Reviewer agent first audited the command plan, then audited the completed run artifacts.
+- Main process independently validated all 16 new formal runs with a JSON consistency script.
+
+Runner and summary tooling updates:
+
+- `src/TestCase_1_jepa.py` now writes:
+  - `run_status=completed`
+  - `command_hash`
+  - `elapsed_seconds` in `config.json`
+  - `cuda_visible_devices`
+  - a note explaining TensorFlow visible GPU remapping.
+- Added `scripts/summarize_jepa_runs.py` for CSV/Markdown summaries from `metrics.json` and `config.json`.
+- The summary script supports `--include-run-regex` and `--exclude-run-regex`.
+- `runs/jepa/case1a/formal_sensor_sweep/summary.md|csv` was regenerated with `--include-run-regex '_adam200$'`, so it now excludes the duplicate verification directories without `_adam200`.
+
+Smoke checks before formal runs:
+
+- `runs/jepa/case1b/smoke5_seed0_sr020`
+  - `Adam 5`, `BFGS 0`, ratio `0.20`, full JEPA.
+  - NRMSE `1.698e-01`, Pearson dissimilarity `1.028e+00`, sensor NRMSE `1.725e-01`.
+  - Verified Case `1b` data path, GPU execution, new `run_status`, `command_hash`, and `cuda_visible_devices`.
+- `runs/jepa/case1a/ablation_smoke/no_jepa_seed0_sr020`
+  - `Adam 5`, `BFGS 0`, ratio `0.20`, `lambda_jepa=0.0`.
+  - NRMSE `2.410e-01`, Pearson dissimilarity `9.216e-01`, sensor NRMSE `2.570e-01`.
+  - TensorFlow emitted expected no-gradient warnings for predictor/JEPA-only variables because the JEPA loss branch was disabled.
+
+Formal training settings:
+
+```bash
+env -u PYTHONPATH \
+  CUDA_VISIBLE_DEVICES=<0-or-1> \
+  LD_LIBRARY_PATH=/home/fzt/miniconda3/envs/ldnets-py39/lib:/opt/ros/humble/opt/rviz_ogre_vendor/lib:/opt/ros/humble/lib/x86_64-linux-gnu:/opt/ros/humble/lib \
+  MPLCONFIGDIR=/tmp/matplotlib-ldnets \
+  /home/fzt/miniconda3/envs/ldnets-py39/bin/python src/TestCase_1_jepa.py \
+  --case <1a|1b|1c> \
+  --adam-epochs 200 \
+  --bfgs-epochs 0 \
+  --batch-samples 25 \
+  --warmup-epochs 20 \
+  --jepa-ramp-epochs 80 \
+  --lambda-rec 1.0 \
+  --learning-rate 1e-2 \
+  --seed <seed> \
+  --sensor-ratio <ratio> \
+  --lambda-jepa <value> \
+  --lambda-smooth <value> \
+  --ema-decay <value> \
+  --output-dir <run-dir>
+```
+
+New formal run count: `16`.
+
+- Case `1a` multi-seed: `6` new runs for ratios `0.20/0.10/0.05`, seeds `1/2`.
+- Case `1a` ablation: `4` new runs at ratio `0.20`, seed `0`.
+- Case `1b` transfer: `3` new runs, seed `0`.
+- Case `1c` transfer: `3` new runs, seed `0`.
+- Reused Case `1a` sparse seed `0` runs from the previous formal sweep:
+  - `runs/jepa/case1a/formal_sensor_sweep/sr020_seed0_adam200`
+  - `runs/jepa/case1a/formal_sensor_sweep/sr010_seed0_adam200`
+  - `runs/jepa/case1a/formal_sensor_sweep/sr005_seed0_adam200`
+
+Summary artifacts:
+
+- `runs/jepa/case1a/multiseed_sensor_sweep/summary.md`
+- `runs/jepa/case1a/multiseed_sensor_sweep/summary.csv`
+- `runs/jepa/case1a/multiseed_sensor_sweep/summary_with_seed0.md`
+- `runs/jepa/case1a/multiseed_sensor_sweep/summary_with_seed0.csv`
+- `runs/jepa/case1a/ablation/summary.md`
+- `runs/jepa/case1a/ablation/summary.csv`
+- `runs/jepa/case1b/formal_sensor_sweep/summary.md`
+- `runs/jepa/case1b/formal_sensor_sweep/summary.csv`
+- `runs/jepa/case1c/formal_sensor_sweep/summary.md`
+- `runs/jepa/case1c/formal_sensor_sweep/summary.csv`
+
+Case `1a` multi-seed sparse aggregate, including reused seed `0`:
+
+| Ratio | Sensors | Seeds | NRMSE mean | NRMSE std | Pearson dissim. mean | Pearson dissim. std | Sensor NRMSE mean | Sensor NRMSE std |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `0.20` | `20` | `0/1/2` | `2.403e-02` | `6.383e-03` | `5.639e-03` | `3.087e-03` | `2.401e-02` | `6.502e-03` |
+| `0.10` | `10` | `0/1/2` | `2.992e-02` | `6.944e-03` | `7.944e-03` | `2.984e-03` | `3.080e-02` | `7.632e-03` |
+| `0.05` | `5` | `0/1/2` | `2.430e-02` | `5.468e-03` | `5.686e-03` | `2.655e-03` | `2.617e-02` | `6.210e-03` |
+
+Case `1a` formal ablation at ratio `0.20`, seed `0`:
+
+| Run | `lambda_jepa` | `lambda_smooth` | `ema_decay` | NRMSE | Pearson dissim. | Sensor NRMSE | Runtime |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `full_jepa_sr020_seed0_adam200` | `0.1` | `1e-4` | `0.99` | `3.139e-02` | `9.202e-03` | `3.148e-02` | `68.0 s` |
+| `no_jepa_sr020_seed0_adam200` | `0.0` | `1e-4` | `0.99` | `3.084e-02` | `8.880e-03` | `3.136e-02` | `68.6 s` |
+| `no_smooth_sr020_seed0_adam200` | `0.1` | `0.0` | `0.99` | `3.110e-02` | `9.032e-03` | `3.157e-02` | `66.3 s` |
+| `no_ema_lag_sr020_seed0_adam200` | `0.1` | `1e-4` | `0.0` | `3.086e-02` | `8.892e-03` | `3.147e-02` | `66.5 s` |
+
+Case `1b/1c` transfer sweep:
+
+| Case | Ratio | Sensors | NRMSE | Pearson dissim. | Sensor NRMSE | Runtime |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `1b` | `1.00` | `100` | `6.746e-02` | `8.345e-02` | `6.746e-02` | `121.2 s` |
+| `1b` | `0.20` | `20` | `6.756e-02` | `8.370e-02` | `7.023e-02` | `119.3 s` |
+| `1b` | `0.05` | `5` | `6.741e-02` | `8.331e-02` | `6.160e-02` | `128.1 s` |
+| `1c` | `1.00` | `100` | `7.656e-02` | `1.760e-01` | `7.656e-02` | `126.4 s` |
+| `1c` | `0.20` | `20` | `8.180e-02` | `2.053e-01` | `8.189e-02` | `124.6 s` |
+| `1c` | `0.05` | `5` | `7.701e-02` | `1.801e-01` | `7.779e-02` | `133.9 s` |
+
+Post-training audit:
+
+- All 16 new formal runs contain `config.json` and `metrics.json`.
+- All new formal runs have `run_status=completed`.
+- For all reviewed runs, `metrics.json.config` matches the same directory's `config.json`.
+- Case, seed, sensor ratio, sensor count, Adam/BFGS epochs, warmup/ramp, loss weights, and EMA decay match the intended experiment matrix.
+- Key metrics are finite for all reviewed runs.
+- `nvidia-smi` after completion showed both RTX 4090 cards idle with only display processes using memory.
+
+Interpretation:
+
+- Case `1a` sparse multi-seed is stable. Even `5%` sensors gives aggregate NRMSE `2.430e-02 +/- 5.468e-03`.
+- The Case `1a` ablation at ratio `0.20`, seed `0`, does not show a clear full-JEPA advantage. `no_jepa` and `no_ema_lag` are slightly better on this single point. Treat this as a warning that the current JEPA loss may be regularizing weakly or redundantly for simple ADR Case `1a`.
+- Case `1b/1c` transfer runs completed and are numerically stable, but their NRMSE is much higher than the recorded original LDNet Case `1b/1c` baselines. This is transfer-success evidence, not positive accuracy evidence.
+- Next method-improvement step should focus on making the JEPA target less redundant with reconstruction, for example masked/patch targets, longer prediction horizon, or applying JEPA on harder temporal cases before claiming accuracy gains.
+
+Provenance notes:
+
+- New formal runs record git commit `4a4af28` with a dirty worktree because runner/summary documentation improvements were active during execution.
+- Reused Case `1a` seed `0` sparse runs record git commit `e2ece79` with a dirty worktree.
+- `refer.md` remains a pre-existing user/reference change and was not modified in this stage.

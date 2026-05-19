@@ -256,23 +256,7 @@ for Meshless Scientific World Models
 
 ---
 
-# 11. 论文大纲
-
-| 章节   | 建议内容                                                                                                                  |
-| ---- | --------------------------------------------------------------------------------------------------------------------- |
-| 摘要   | 提出 World-LDNet：meshless latent world model；强调 JEPA、variable initialization、global-local transition、continuous decoder |
-| 引言   | 从 PDE simulation cost 与多查询需求切入；指出原始 LDNets 的限制                                                                        |
-| 相关工作 | Reduced-order models、JEPA/world models、neural operators                                                               |
-| 问题定义 | 不规则采样数据与预测/控制任务定义                                                                                                     |
-| 方法   | `E_phi`、`T_theta`、JEPA predictor、operator tokens                                                                      |
-| 损失函数 | reconstruction、representation prediction、physics regularization                                                       |
-| 实验   | 原始复现、OOD、长时外推、控制实验                                                                                                    |
-| 结果分析 | latent visualization、attention kernel、failure cases                                                                   |
-| 结论   | 从 surrogate 升级为 controllable scientific world model                                                                   |
-
----
-
-# 12. 关键风险与执行优先级
+# 11. 关键风险与执行优先级
 
 ## 优先级
 
