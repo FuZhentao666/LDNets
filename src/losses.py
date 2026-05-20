@@ -11,6 +11,10 @@ def jepa_loss(predicted_embedding, target_embedding):
     return tf.reduce_mean(tf.square(predicted_embedding - tf.stop_gradient(target_embedding)))
 
 
+def dynamics_consistency_loss(rollout_latent, teacher_latent):
+    return tf.reduce_mean(tf.square(rollout_latent - tf.stop_gradient(teacher_latent)))
+
+
 def latent_smoothness_loss(states):
     if states.shape[1] == 1:
         return tf.constant(0.0, dtype=states.dtype)

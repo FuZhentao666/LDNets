@@ -250,7 +250,7 @@ class JEPALDNet(tf.keras.Model):
     def decode(self, states, points_full):
         return self.decoder(states, points_full)
 
-    def encode_targets(self, target_features, condition):
+    def _encode_target_sets(self, target_features, condition):
         batch = tf.shape(target_features)[0]
         num_targets = tf.shape(target_features)[1]
         num_points = tf.shape(target_features)[2]
@@ -268,8 +268,19 @@ class JEPALDNet(tf.keras.Model):
                 ),
                 (batch * num_targets, tf.shape(condition)[-1]),
             )
-        _, flat_embedding = self.target_encoder(flat_features, flat_condition)
-        return tf.reshape(flat_embedding, (batch, num_targets, self.target_encoder.embedding_dim))
+        flat_latent, flat_embedding = self.target_encoder(flat_features, flat_condition)
+        latent = tf.reshape(flat_latent, (batch, num_targets, self.target_encoder.latent_dim))
+        embedding = tf.reshape(
+            flat_embedding, (batch, num_targets, self.target_encoder.embedding_dim)
+        )
+        return latent, embedding
+
+    def encode_targets(self, target_features, condition):
+        _, embedding = self._encode_target_sets(target_features, condition)
+        return embedding
+
+    def encode_teacher_contexts(self, teacher_context_features, condition):
+        return self._encode_target_sets(teacher_context_features, condition)
 
     def predict_targets(self, states_at_targets, target_times, condition, context_embedding):
         return self.predictor(states_at_targets, target_times, condition, context_embedding)

@@ -15,6 +15,8 @@ METRIC_FIELDS = [
     "sensor_nrmse",
     "reconstruction_mse_valid",
     "jepa_feature_mse_valid",
+    "dyn_consistency_mse_valid",
+    "dyn_consistency_mse_train_last",
     "latent_smoothness_valid",
     "loss_train_last",
     "loss_valid_last",
@@ -40,6 +42,7 @@ ROW_FIELDS = [
     "warmup_epochs",
     "jepa_ramp_epochs",
     "lambda_jepa",
+    "lambda_dyn_consistency",
     "lambda_smooth",
     "ema_decay",
     "context_steps",
@@ -50,6 +53,14 @@ ROW_FIELDS = [
     "target_count",
     "time_count",
     "target_time_strategy",
+    "teacher_context_steps",
+    "teacher_context_stride",
+    "multi_context_enabled",
+    "context_window_count",
+    "dyn_loss_type",
+    "dynamic_target_resampling",
+    "patch_resample_every_requested",
+    "patch_resample_every_effective",
     "embedding_dim",
     "encoder_width",
     "predictor_width",
@@ -123,6 +134,7 @@ def row_from_metrics(metrics_path):
         "target_points",
         config.get("target_selection", {}).get("target_points"),
     )
+    multi_context = config.get("multi_context", {})
     row = {
         "run_dir": str(metrics_path.parent),
         "run_status": run_status,
@@ -137,6 +149,10 @@ def row_from_metrics(metrics_path):
         "warmup_epochs": config.get("loss", {}).get("warmup_epochs"),
         "jepa_ramp_epochs": config.get("loss", {}).get("jepa_ramp_epochs"),
         "lambda_jepa": config.get("loss", {}).get("lambda_jepa"),
+        "lambda_dyn_consistency": config.get("loss", {}).get(
+            "lambda_dyn_consistency",
+            config.get("loss", {}).get("lambda_dyn"),
+        ),
         "lambda_smooth": config.get("loss", {}).get("lambda_smooth"),
         "ema_decay": config.get("loss", {}).get("ema_decay"),
         "context_steps": get_arg(
@@ -151,6 +167,37 @@ def row_from_metrics(metrics_path):
         "target_count": config.get("target_selection", {}).get("target_count"),
         "time_count": config.get("target_selection", {}).get("time_count"),
         "target_time_strategy": target_time_strategy,
+        "teacher_context_steps": get_arg(
+            config,
+            "teacher_context_steps",
+            config.get("target_selection", {}).get("teacher_context_steps"),
+        ),
+        "teacher_context_stride": get_arg(
+            config,
+            "teacher_context_stride",
+            multi_context.get(
+                "teacher_context_stride",
+                config.get("target_selection", {}).get("teacher_context_stride"),
+            ),
+        ),
+        "multi_context_enabled": multi_context.get(
+            "enabled", target_mode == "multi-context-latent"
+        ),
+        "context_window_count": multi_context.get("context_window_count"),
+        "dyn_loss_type": multi_context.get("dyn_loss_type"),
+        "dynamic_target_resampling": get_arg(
+            config,
+            "dynamic_target_resampling",
+            config.get("target_selection", {}).get("dynamic_target_resampling"),
+        ),
+        "patch_resample_every_requested": get_arg(
+            config,
+            "patch_resample_every",
+            config.get("target_selection", {}).get("patch_resample_every_requested"),
+        ),
+        "patch_resample_every_effective": config.get("target_selection", {}).get(
+            "patch_resample_every_effective"
+        ),
         "embedding_dim": get_arg(config, "embedding_dim"),
         "encoder_width": get_arg(config, "encoder_width"),
         "predictor_width": get_arg(config, "predictor_width"),
@@ -247,6 +294,7 @@ def write_markdown(rows, aggregate, path, group_fields):
         "sensor_count",
         "batch_samples",
         "lambda_jepa",
+        "lambda_dyn_consistency",
         "lambda_smooth",
         "ema_decay",
         "context_steps",
@@ -257,6 +305,12 @@ def write_markdown(rows, aggregate, path, group_fields):
         "target_count",
         "time_count",
         "target_time_strategy",
+        "teacher_context_steps",
+        "teacher_context_stride",
+        "multi_context_enabled",
+        "context_window_count",
+        "dyn_loss_type",
+        "patch_resample_every_effective",
         "nrmse",
         "pearson_dissimilarity",
         "sensor_nrmse",
@@ -306,7 +360,10 @@ def build_parser():
         "--aggregate-by",
         default=(
             "case,sensor_ratio,lambda_jepa,lambda_smooth,ema_decay,"
-            "target_mode,mask_ratio,prediction_horizon,target_points,target_time_strategy"
+            "target_mode,mask_ratio,prediction_horizon,target_points,target_time_strategy,"
+            "lambda_dyn_consistency,teacher_context_steps,teacher_context_stride,"
+            "multi_context_enabled,context_window_count,dyn_loss_type,"
+            "patch_resample_every_effective"
         ),
         help="Comma-separated row fields used for aggregate mean/std tables.",
     )

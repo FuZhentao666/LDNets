@@ -122,7 +122,7 @@ def build_parser():
     parser.add_argument("--target-points", type=int, default=32)
     parser.add_argument(
         "--target-mode",
-        choices=["points", "masked-points", "future-patches"],
+        choices=["points", "masked-points", "future-patches", "multi-context-latent"],
         default="points",
         help="How to select JEPA target points; 'points' preserves the original behavior.",
     )
@@ -143,7 +143,22 @@ def build_parser():
     parser.add_argument("--predictor-width", type=int, default=32)
     parser.add_argument("--lambda-rec", type=float, default=1.0)
     parser.add_argument("--lambda-jepa", type=float, default=0.1)
+    parser.add_argument(
+        "--lambda-dyn-consistency",
+        "--lambda-dyn",
+        dest="lambda_dyn_consistency",
+        type=float,
+        default=0.0,
+    )
     parser.add_argument("--lambda-smooth", type=float, default=1e-4)
+    parser.add_argument("--teacher-context-steps", type=int, default=1)
+    parser.add_argument("--teacher-context-stride", type=int, default=1)
+    parser.add_argument("--dynamic-target-resampling", action="store_true")
+    parser.add_argument(
+        "--patch-resample-every",
+        choices=["never", "epoch", "batch"],
+        default="never",
+    )
     parser.add_argument(
         "--warmup-epochs",
         "--jepa-warmup-epochs",
@@ -185,16 +200,18 @@ def make_condition_summary(dataset, config, context_steps):
     return tf.reduce_mean(dataset["inp_signals"][:, :context_steps, :], axis=1)
 
 
-def choose_indices(num_points, args, rng):
+def choose_sensor_indices(num_points, args, rng):
     if args.sensor_count is None:
         sensor_count = int(round(num_points * args.sensor_ratio))
     else:
         sensor_count = args.sensor_count
     sensor_count = max(1, min(num_points, sensor_count))
-    sensor_indices = np.sort(rng.choice(num_points, sensor_count, replace=False))
+    return np.sort(rng.choice(num_points, sensor_count, replace=False)).astype(np.int32)
 
+
+def choose_target_indices(num_points, sensor_indices, args, rng):
     all_indices = np.arange(num_points)
-    if args.target_mode in {"masked-points", "future-patches"}:
+    if args.target_mode in {"masked-points", "future-patches", "multi-context-latent"}:
         candidate_indices = np.setdiff1d(all_indices, sensor_indices, assume_unique=True)
         if candidate_indices.size == 0:
             candidate_indices = all_indices
@@ -210,7 +227,13 @@ def choose_indices(num_points, args, rng):
     else:
         target_indices = rng.choice(candidate_indices, target_count, replace=False)
     target_indices = np.sort(target_indices)
-    return sensor_indices.astype(np.int32), target_indices.astype(np.int32)
+    return target_indices.astype(np.int32)
+
+
+def choose_indices(num_points, args, rng):
+    sensor_indices = choose_sensor_indices(num_points, args, rng)
+    target_indices = choose_target_indices(num_points, sensor_indices, args, rng)
+    return sensor_indices, target_indices
 
 
 def target_time_indices(num_times, args, rng):
@@ -249,9 +272,10 @@ def gather_target_features(dataset, point_indices, time_indices):
     fields = dataset["out_fields"]
     points = tf.gather(tf.gather(points, time_indices, axis=1), point_indices, axis=2)
     fields = tf.gather(tf.gather(fields, time_indices, axis=1), point_indices, axis=2)
-    num_targets = len(time_indices)
-    times_np = np.asarray(dataset["times"])[time_indices]
-    times = tf.convert_to_tensor(times_np, dtype=tf.float64)
+    num_targets = tf.shape(time_indices)[0]
+    times = tf.gather(
+        tf.convert_to_tensor(dataset["times"], dtype=tf.float64), time_indices
+    )
     times = tf.broadcast_to(
         tf.reshape(times, (1, num_targets, 1, 1)),
         (dataset["num_samples"], num_targets, tf.shape(points)[2], 1),
@@ -259,7 +283,114 @@ def gather_target_features(dataset, point_indices, time_indices):
     return tf.concat([points, times, fields], axis=-1)
 
 
-def forward_chunk(model, chunk, config, args, sensor_indices, target_indices, time_indices):
+def teacher_context_time_windows(num_times, time_indices, steps, stride):
+    steps = max(1, int(steps))
+    stride = max(1, int(stride))
+    offsets = np.arange(steps, dtype=np.int32) * stride
+    windows = np.asarray(time_indices, dtype=np.int32)[:, None] + offsets[None, :]
+    return np.minimum(windows, num_times - 1).astype(np.int32)
+
+
+def teacher_context_time_windows_tensor(num_times, time_indices, steps, stride):
+    steps = max(1, int(steps))
+    stride = max(1, int(stride))
+    offsets = tf.range(steps, dtype=tf.int32) * stride
+    windows = tf.expand_dims(time_indices, axis=1) + tf.reshape(offsets, (1, steps))
+    return tf.minimum(windows, tf.cast(num_times - 1, tf.int32))
+
+
+def gather_teacher_context_features(dataset, point_indices, time_indices, args):
+    windows = teacher_context_time_windows_tensor(
+        dataset["num_times"],
+        time_indices,
+        args.teacher_context_steps,
+        args.teacher_context_stride,
+    )
+    points = tf.convert_to_tensor(dataset["points_full"], dtype=tf.float64)
+    fields = dataset["out_fields"]
+    points = tf.gather(tf.gather(points, windows, axis=1), point_indices, axis=3)
+    fields = tf.gather(tf.gather(fields, windows, axis=1), point_indices, axis=3)
+    num_targets = tf.shape(windows)[0]
+    window_steps = tf.shape(windows)[1]
+    times = tf.gather(tf.convert_to_tensor(dataset["times"], dtype=tf.float64), windows)
+    times = tf.broadcast_to(
+        tf.reshape(times, (1, num_targets, window_steps, 1, 1)),
+        (
+            dataset["num_samples"],
+            num_targets,
+            window_steps,
+            tf.shape(points)[3],
+            1,
+        ),
+    )
+    features = tf.concat([points, times, fields], axis=-1)
+    return tf.reshape(
+        features,
+        (
+            dataset["num_samples"],
+            num_targets,
+            window_steps * tf.shape(points)[3],
+            tf.shape(features)[-1],
+        ),
+    )
+
+
+def effective_resampling_policy(args):
+    if args.dynamic_target_resampling:
+        requested = args.patch_resample_every
+        if requested == "never":
+            requested = "epoch"
+    else:
+        requested = args.patch_resample_every
+    if requested == "batch":
+        return "epoch"
+    return requested
+
+
+class TargetSamplingState:
+    def __init__(self, num_points, num_times, args):
+        self.num_points = num_points
+        self.num_times = num_times
+        self.args = args
+        self.policy = effective_resampling_policy(args)
+        rng = np.random.default_rng(int(args.seed))
+        self.sensor_indices, self.target_indices = choose_indices(
+            self.num_points, self.args, rng
+        )
+        self.time_indices = target_time_indices(self.num_times, self.args, rng)
+        self.initial_sensor_indices = self.sensor_indices.copy()
+        self.initial_target_indices = self.target_indices.copy()
+        self.initial_time_indices = self.time_indices.copy()
+        self.sensor_indices_tensor = tf.constant(self.sensor_indices, dtype=tf.int32)
+        self.target_indices_tensor = tf.Variable(
+            self.target_indices, trainable=False, dtype=tf.int32
+        )
+        self.time_indices_tensor = tf.Variable(
+            self.time_indices, trainable=False, dtype=tf.int32
+        )
+        self.last_resample_epoch = 0
+        self.target_resample_count = 0
+
+    def resample_targets(self, epoch):
+        rng = np.random.default_rng(int(self.args.seed) + int(epoch))
+        self.target_indices = choose_target_indices(
+            self.num_points, self.sensor_indices, self.args, rng
+        )
+        self.time_indices = target_time_indices(self.num_times, self.args, rng)
+        self.target_indices_tensor.assign(self.target_indices)
+        self.time_indices_tensor.assign(self.time_indices)
+        self.last_resample_epoch = int(epoch)
+        self.target_resample_count += 1
+
+    def maybe_resample_epoch(self, epoch):
+        if self.policy == "epoch":
+            self.resample_targets(epoch)
+
+
+def forward_chunk(model, chunk, config, args, sampling):
+    sensor_indices = sampling.sensor_indices_tensor
+    target_indices = sampling.target_indices_tensor
+    time_indices = sampling.time_indices_tensor
     context_features = gather_context_features(chunk, sensor_indices, args.context_steps)
     target_features = gather_target_features(chunk, target_indices, time_indices)
     condition_summary = make_condition_summary(chunk, config, args.context_steps)
@@ -274,12 +405,23 @@ def forward_chunk(model, chunk, config, args, sensor_indices, target_indices, ti
         states, tf.convert_to_tensor(chunk["points_full"], dtype=tf.float64)
     )
     states_at_targets = tf.gather(states, time_indices, axis=1)
-    target_times = tf.convert_to_tensor(np.asarray(chunk["times"])[time_indices], tf.float64)
+    target_times = tf.gather(
+        tf.convert_to_tensor(chunk["times"], dtype=tf.float64), time_indices
+    )
     h_pred = model.predict_targets(
         states_at_targets, target_times, condition_summary, context_embedding
     )
-    h_target = model.encode_targets(target_features, condition_summary)
-    return prediction, states, h_pred, h_target
+    z_teacher = None
+    if args.target_mode == "multi-context-latent":
+        teacher_context_features = gather_teacher_context_features(
+            chunk, target_indices, time_indices, args
+        )
+        z_teacher, h_target = model.encode_teacher_contexts(
+            teacher_context_features, condition_summary
+        )
+    else:
+        h_target = model.encode_targets(target_features, condition_summary)
+    return prediction, states, states_at_targets, h_pred, h_target, z_teacher
 
 
 def loss_components_on_chunks(
@@ -287,27 +429,33 @@ def loss_components_on_chunks(
     chunks,
     config,
     args,
-    sensor_indices,
-    target_indices,
-    time_indices,
+    sampling,
 ):
     rec_sum = tf.constant(0.0, dtype=tf.float64)
     rec_count = tf.constant(0.0, dtype=tf.float64)
     jepa_terms = []
+    dyn_terms = []
     smooth_terms = []
     for chunk in chunks:
-        prediction, states, h_pred, h_target = forward_chunk(
-            model, chunk, config, args, sensor_indices, target_indices, time_indices
+        prediction, states, states_at_targets, h_pred, h_target, z_teacher = forward_chunk(
+            model, chunk, config, args, sampling
         )
         error = prediction - chunk["out_fields"]
         rec_sum += tf.reduce_sum(tf.square(error))
         rec_count += tf.cast(tf.size(error), tf.float64)
         jepa_terms.append(losses.jepa_loss(h_pred, h_target))
+        if args.target_mode == "multi-context-latent":
+            dyn_terms.append(losses.dynamics_consistency_loss(states_at_targets, z_teacher))
         smooth_terms.append(losses.latent_smoothness_loss(states))
 
     return {
         "reconstruction": rec_sum / rec_count,
         "jepa": tf.add_n(jepa_terms) / len(jepa_terms),
+        "dyn_consistency": (
+            tf.add_n(dyn_terms) / len(dyn_terms)
+            if dyn_terms
+            else tf.constant(0.0, dtype=tf.float64)
+        ),
         "smoothness": tf.add_n(smooth_terms) / len(smooth_terms),
     }
 
@@ -317,25 +465,24 @@ def loss_on_chunks(
     chunks,
     config,
     args,
-    sensor_indices,
-    target_indices,
-    time_indices,
+    sampling,
     lambda_jepa_value,
+    lambda_dyn_value,
 ):
     components = loss_components_on_chunks(
         model,
         chunks,
         config,
         args,
-        sensor_indices,
-        target_indices,
-        time_indices,
+        sampling,
     )
     loss_value = args.lambda_rec * components["reconstruction"]
     if args.lambda_jepa > 0:
         loss_value += lambda_jepa_value * components["jepa"]
     if args.lambda_smooth > 0:
         loss_value += args.lambda_smooth * components["smoothness"]
+    if args.target_mode == "multi-context-latent" and args.lambda_dyn_consistency > 0:
+        loss_value += lambda_dyn_value * components["dyn_consistency"]
     if config["alpha_reg"] is not None:
         loss_value += config["alpha_reg"] * losses.weight_l2(
             [model.context_encoder, model.transition, model.decoder, model.predictor]
@@ -343,12 +490,10 @@ def loss_on_chunks(
     return loss_value
 
 
-def prediction_on_chunks(model, chunks, config, args, sensor_indices, target_indices, time_indices):
+def prediction_on_chunks(model, chunks, config, args, sampling):
     predictions = []
     for chunk in chunks:
-        prediction, _, _, _ = forward_chunk(
-            model, chunk, config, args, sensor_indices, target_indices, time_indices
-        )
+        prediction, _, _, _, _, _ = forward_chunk(model, chunk, config, args, sampling)
         predictions.append(prediction)
     return tf.concat(predictions, axis=0)
 
@@ -370,8 +515,8 @@ def build_model(config, args):
     )
 
 
-def initialize_model(model, chunk, config, args, sensor_indices, target_indices, time_indices):
-    forward_chunk(model, chunk, config, args, sensor_indices, target_indices, time_indices)
+def initialize_model(model, chunk, config, args, sampling):
+    forward_chunk(model, chunk, config, args, sampling)
     model.sync_target_encoder()
 
 
@@ -390,39 +535,72 @@ def save_loss_plot(history, adam_epochs, output_path):
     plt.close(fig)
 
 
-def train_adam(model, loss_train, loss_valid, args):
+def scheduled_weight(epoch, target_value, warmup_epochs, ramp_epochs):
+    if target_value <= 0:
+        return 0.0
+    if epoch <= warmup_epochs:
+        return 0.0
+    if ramp_epochs <= 0:
+        return target_value
+    return target_value * min(1.0, (epoch - warmup_epochs) / ramp_epochs)
+
+
+def train_adam(model, loss_train, loss_valid, args, sampling):
     optimizer = tf.keras.optimizers.Adam(learning_rate=args.learning_rate)
     history = TrainingHistory()
     lambda_jepa = tf.Variable(0.0, dtype=tf.float64, trainable=False)
+    lambda_dyn = tf.Variable(0.0, dtype=tf.float64, trainable=False)
 
-    @tf.function
-    def train_step():
+    def eager_train_step():
         with tf.GradientTape() as tape:
-            loss_value = loss_train(lambda_jepa)
+            loss_value = loss_train(lambda_jepa, lambda_dyn)
         gradients = tape.gradient(loss_value, model.trainable_variables)
         optimizer.apply_gradients(zip(gradients, model.trainable_variables))
         model.update_target_encoder(args.ema_decay)
         return loss_value
 
-    history.append(0, loss_train(lambda_jepa).numpy(), loss_valid(lambda_jepa).numpy())
+    @tf.function
+    def graph_train_step():
+        with tf.GradientTape() as tape:
+            loss_value = loss_train(lambda_jepa, lambda_dyn)
+        gradients = tape.gradient(loss_value, model.trainable_variables)
+        optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+        model.update_target_encoder(args.ema_decay)
+        return loss_value
+
+    train_step = graph_train_step
+
+    history.append(
+        0,
+        loss_train(lambda_jepa, lambda_dyn).numpy(),
+        loss_valid(lambda_jepa, lambda_dyn).numpy(),
+    )
     for epoch in range(1, args.adam_epochs + 1):
-        if epoch <= args.jepa_warmup_epochs:
-            lambda_value = 0.0
-        elif args.jepa_ramp_epochs <= 0:
-            lambda_value = args.lambda_jepa
-        else:
-            lambda_value = args.lambda_jepa * min(
-                1.0, (epoch - args.jepa_warmup_epochs) / args.jepa_ramp_epochs
+        sampling.maybe_resample_epoch(epoch)
+        lambda_jepa.assign(
+            scheduled_weight(
+                epoch, args.lambda_jepa, args.jepa_warmup_epochs, args.jepa_ramp_epochs
             )
-        lambda_jepa.assign(lambda_value)
+        )
+        lambda_dyn.assign(
+            scheduled_weight(
+                epoch,
+                args.lambda_dyn_consistency,
+                args.jepa_warmup_epochs,
+                args.jepa_ramp_epochs,
+            )
+        )
         train_step()
         if epoch % 10 == 0 or epoch == args.adam_epochs:
             history.append(
                 epoch,
-                loss_train(lambda_jepa).numpy(),
-                loss_valid(tf.constant(args.lambda_jepa, dtype=tf.float64)).numpy(),
+                loss_train(lambda_jepa, lambda_dyn).numpy(),
+                loss_valid(
+                    tf.constant(args.lambda_jepa, dtype=tf.float64),
+                    tf.constant(args.lambda_dyn_consistency, dtype=tf.float64),
+                ).numpy(),
             )
-    return history, lambda_jepa
+    return history, lambda_jepa, lambda_dyn
 
 
 def append_bfgs_history(history, opt, start_iteration):
@@ -453,11 +631,11 @@ def run(args):
 
     np.random.seed(args.seed)
     tf.random.set_seed(args.seed)
-    rng = np.random.default_rng(args.seed)
 
     dataset_train, dataset_valid, dataset_tests = load_case_data(config)
-    sensor_indices, target_indices = choose_indices(dataset_train["num_points"], args, rng)
-    time_indices = target_time_indices(dataset_train["num_times"], args, rng)
+    sampling = TargetSamplingState(
+        dataset_train["num_points"], dataset_train["num_times"], args
+    )
 
     train_chunks = dataset_chunks(dataset_train, args.batch_samples)
     valid_chunks = dataset_chunks(dataset_valid, args.batch_samples)
@@ -469,46 +647,48 @@ def run(args):
         train_chunks[0],
         config,
         args,
-        sensor_indices,
-        target_indices,
-        time_indices,
+        sampling,
     )
     print("Trainable parameters:", metrics.parameter_count(model))
 
-    def loss_train(lambda_jepa_value):
+    def loss_train(lambda_jepa_value, lambda_dyn_value):
         return loss_on_chunks(
             model,
             train_chunks,
             config,
             args,
-            sensor_indices,
-            target_indices,
-            time_indices,
+            sampling,
             lambda_jepa_value,
+            lambda_dyn_value,
         )
 
-    def loss_valid(lambda_jepa_value):
+    def loss_valid(lambda_jepa_value, lambda_dyn_value):
         return loss_on_chunks(
             model,
             valid_chunks,
             config,
             args,
-            sensor_indices,
-            target_indices,
-            time_indices,
+            sampling,
             lambda_jepa_value,
+            lambda_dyn_value,
         )
 
-    history, lambda_jepa = train_adam(model, loss_train, loss_valid, args)
+    history, lambda_jepa, lambda_dyn = train_adam(model, loss_train, loss_valid, args, sampling)
 
     if args.bfgs_epochs > 0:
         print("training (BFGS, fixed EMA target encoder)...")
 
         def bfgs_train():
-            return loss_train(tf.constant(args.lambda_jepa, dtype=tf.float64))
+            return loss_train(
+                tf.constant(args.lambda_jepa, dtype=tf.float64),
+                tf.constant(args.lambda_dyn_consistency, dtype=tf.float64),
+            )
 
         def bfgs_valid():
-            return loss_valid(tf.constant(args.lambda_jepa, dtype=tf.float64))
+            return loss_valid(
+                tf.constant(args.lambda_jepa, dtype=tf.float64),
+                tf.constant(args.lambda_dyn_consistency, dtype=tf.float64),
+            )
 
         opt = optimization.OptimizationProblem(
             model.trainable_variables, bfgs_train, bfgs_valid
@@ -517,7 +697,7 @@ def run(args):
         append_bfgs_history(history, opt, args.adam_epochs)
 
     out_fields = prediction_on_chunks(
-        model, test_chunks, config, args, sensor_indices, target_indices, time_indices
+        model, test_chunks, config, args, sampling
     )
     out_fields_app = utils.denormalize_output(
         out_fields, config["problem"], config["normalization"]
@@ -526,8 +706,8 @@ def run(args):
         dataset_tests["out_fields"], config["problem"], config["normalization"]
     ).numpy()
 
-    sensor_ref = out_fields_ref[:, :, sensor_indices, :]
-    sensor_app = out_fields_app[:, :, sensor_indices, :]
+    sensor_ref = out_fields_ref[:, :, sampling.sensor_indices, :]
+    sensor_app = out_fields_app[:, :, sampling.sensor_indices, :]
     nrmse = metrics.nrmse(out_fields_app, out_fields_ref)
     pearson_dissimilarity = metrics.pearson_dissimilarity(out_fields_app, out_fields_ref)
     sensor_nrmse = metrics.nrmse(sensor_app, sensor_ref)
@@ -537,9 +717,14 @@ def run(args):
         valid_chunks,
         config,
         args,
-        sensor_indices,
-        target_indices,
-        time_indices,
+        sampling,
+    )
+    train_components = loss_components_on_chunks(
+        model,
+        train_chunks,
+        config,
+        args,
+        sampling,
     )
 
     if not args.skip_figures:
@@ -553,6 +738,13 @@ def run(args):
     elapsed_seconds = time.time() - start_time
     end_time_text = time.strftime("%Y-%m-%d %H:%M:%S %z")
     command = command_text()
+    teacher_context_windows = teacher_context_time_windows(
+        dataset_train["num_times"],
+        sampling.time_indices,
+        args.teacher_context_steps,
+        args.teacher_context_stride,
+    )
+    multi_context_enabled = args.target_mode == "multi-context-latent"
     run_config = {
         "run_status": "completed",
         "case": args.case,
@@ -570,9 +762,9 @@ def run(args):
             "TensorFlow reports devices after CUDA_VISIBLE_DEVICES remapping; "
             "cuda_visible_devices records the requested physical GPU selection."
         ),
-        "sensor_indices": sensor_indices.tolist(),
-        "target_indices": target_indices.tolist(),
-        "target_time_indices": time_indices.tolist(),
+        "sensor_indices": sampling.sensor_indices.tolist(),
+        "target_indices": sampling.target_indices.tolist(),
+        "target_time_indices": sampling.time_indices.tolist(),
         "target_selection": {
             "mode": args.target_mode,
             "mask_ratio": args.mask_ratio,
@@ -580,10 +772,46 @@ def run(args):
             "prediction_horizon": args.prediction_horizon,
             "target_points": args.target_points,
             "time_strategy": args.target_time_strategy,
-            "target_count": len(target_indices),
-            "time_count": len(time_indices),
-            "target_indices": target_indices.tolist(),
-            "target_time_indices": time_indices.tolist(),
+            "target_count": len(sampling.target_indices),
+            "time_count": len(sampling.time_indices),
+            "target_indices": sampling.target_indices.tolist(),
+            "target_time_indices": sampling.time_indices.tolist(),
+            "initial_target_indices": sampling.initial_target_indices.tolist(),
+            "initial_target_time_indices": sampling.initial_time_indices.tolist(),
+            "teacher_context_steps": args.teacher_context_steps,
+            "teacher_context_stride": args.teacher_context_stride,
+            "dynamic_target_resampling": args.dynamic_target_resampling,
+            "patch_resample_every_requested": args.patch_resample_every,
+            "patch_resample_every_effective": sampling.policy,
+            "target_resample_count": sampling.target_resample_count,
+            "last_resample_epoch": sampling.last_resample_epoch,
+            "sensors_resampled": False,
+        },
+        "multi_context": {
+            "enabled": multi_context_enabled,
+            "context_window_count": len(sampling.time_indices)
+            if multi_context_enabled
+            else 0,
+            "teacher_context_steps": args.teacher_context_steps
+            if multi_context_enabled
+            else 0,
+            "teacher_context_stride": args.teacher_context_stride
+            if multi_context_enabled
+            else 0,
+            "teacher_context_time_indices": teacher_context_windows.tolist()
+            if multi_context_enabled
+            else [],
+            "teacher_point_indices": sampling.target_indices.tolist()
+            if multi_context_enabled
+            else [],
+            "rolled_state_time_indices": sampling.time_indices.tolist()
+            if multi_context_enabled
+            else [],
+            "teacher_latent_source": "ema_target_encoder"
+            if multi_context_enabled
+            else None,
+            "teacher_stop_gradient": bool(multi_context_enabled),
+            "dyn_loss_type": "mse_stopgrad_teacher" if multi_context_enabled else None,
         },
         "model": {
             "latent_dim": config["num_latent_states"],
@@ -600,10 +828,13 @@ def run(args):
         "loss": {
             "lambda_rec": args.lambda_rec,
             "lambda_jepa": args.lambda_jepa,
-            "lambda_dyn": 0.0,
+            "lambda_dyn": args.lambda_dyn_consistency,
+            "lambda_dyn_consistency": args.lambda_dyn_consistency,
             "lambda_smooth": args.lambda_smooth,
             "warmup_epochs": args.jepa_warmup_epochs,
             "jepa_ramp_epochs": args.jepa_ramp_epochs,
+            "dyn_warmup_epochs": args.jepa_warmup_epochs,
+            "dyn_ramp_epochs": args.jepa_ramp_epochs,
             "ema_decay": args.ema_decay,
         },
     }
@@ -616,6 +847,10 @@ def run(args):
         "sensor_nrmse": sensor_nrmse,
         "horizon_nrmse": horizon_values,
         "jepa_feature_mse_valid": float(valid_components["jepa"].numpy()),
+        "dyn_consistency_mse_valid": float(valid_components["dyn_consistency"].numpy()),
+        "dyn_consistency_mse_train_last": float(
+            train_components["dyn_consistency"].numpy()
+        ),
         "latent_smoothness_valid": float(valid_components["smoothness"].numpy()),
         "reconstruction_mse_valid": float(valid_components["reconstruction"].numpy()),
         "loss_train_last": history.loss_train_history[-1],
