@@ -930,3 +930,103 @@ Provenance notes:
 - New formal runs record git commit `4a4af28` with a dirty worktree because runner/summary documentation improvements were active during execution.
 - Reused Case `1a` seed `0` sparse runs record git commit `e2ece79` with a dirty worktree.
 - `refer.md` remains a pre-existing user/reference change and was not modified in this stage.
+
+### 2026-05-19 [FORMAL] Stage 1 Fair Baseline and Masked Target Audit
+
+Goal: check whether the JEPA world-model changes have a fair optimizer-budget advantage and whether masked JEPA targets improve over the current point-target JEPA and no-JEPA sparse encoder baselines.
+
+Code updates:
+
+- `src/TestCase_1_jepa.py`
+  - added `--target-mode {points,masked-points,future-patches}`.
+  - added `--mask-ratio`.
+  - added `--target-time-strategy {next,random-future,horizon}`.
+  - added `target_selection` to `config.json`.
+  - default behavior remains backward-compatible: `points` + `next`.
+- `scripts/summarize_jepa_runs.py`
+  - now records `target_mode`, `mask_ratio`, and `target_time_strategy`.
+  - default aggregate grouping includes the target fields.
+  - legacy JEPA configs without `target_selection` are interpreted as `points / next`; `mask_ratio` is blank for `points` mode because it is ignored.
+- `src/TestCase_1.py`
+  - added provenance fields to result JSON: `run_status`, `algorithm`, `elapsed_seconds`, `command_hash`, `git_commit`, `git_status_short`, and `cuda_visible_devices`.
+  - training objective, optimizer calls, data chunking, and evaluation path are unchanged.
+
+GPU and agent workflow:
+
+- Worker agent executed the training matrix.
+- Reviewer agent audited the code changes, command matrix, result JSON, and summaries.
+- GPU0 had other user processes under `/home/wat/miniconda3/envs/marl_cm/bin/python`, so formal runs used only `CUDA_VISIBLE_DEVICES=1` sequentially.
+- Final `nvidia-smi` showed GPU1 idle; GPU0 still had the unrelated user workload.
+
+Smoke validation:
+
+- `runs/jepa/case1a/masked_smoke/sr020_seed0_adam5`
+  - Case `1a`, ratio `0.20`, seed `0`, `Adam 5`, `BFGS 0`.
+  - `target-mode=masked-points`, `mask-ratio=0.5`, `target-time-strategy=random-future`, `prediction-horizon=2`.
+  - NRMSE `2.441e-01`, Pearson dissimilarity `9.157e-01`, sensor NRMSE `2.567e-01`.
+  - This is a code-path smoke only, not a formal result.
+
+Formal outputs:
+
+- Original LDNet same-budget baseline:
+  - `runs/baseline/case1/adam200_bfgs0_seed0`
+- No-JEPA sparse encoder baseline:
+  - `runs/jepa/case1a/no_jepa_sparse_fair`
+- Masked-points JEPA sweep:
+  - `runs/jepa/case1a/masked_points_sweep`
+- Combined fair comparison:
+  - `runs/jepa/case1a/fair_jepa_comparison/summary.md`
+  - `runs/jepa/case1a/fair_jepa_comparison/summary.csv`
+
+Original LDNet same-budget baseline:
+
+| Case | Adam + BFGS | NRMSE | Pearson dissim. | Runtime |
+| --- | ---: | ---: | ---: | ---: |
+| `1a` | `200 + 0` | `7.267e-02` | `4.976e-02` | `43.5 s` |
+| `1b` | `200 + 0` | `6.924e-02` | `8.822e-02` | `78.7 s` |
+| `1c` | `200 + 0` | `8.883e-02` | `2.489e-01` | `77.1 s` |
+
+No-JEPA sparse encoder baseline, Case `1a`:
+
+| Ratio | Sensors | Seeds | NRMSE mean | NRMSE std | Pearson dissim. mean | Sensor NRMSE mean |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `0.20` | `20` | `0/1/2` | `2.386e-02` | `6.049e-03` | `5.536e-03` | `2.395e-02` |
+| `0.10` | `10` | `0/1/2` | `2.634e-02` | `5.873e-03` | `6.552e-03` | `2.647e-02` |
+| `0.05` | `5` | `0/1/2` | `2.455e-02` | `6.352e-03` | `5.868e-03` | `2.687e-02` |
+
+Current point-target JEPA vs masked-points JEPA, Case `1a`:
+
+| Family | Ratio | Seeds | NRMSE mean | NRMSE std | Pearson dissim. mean | Sensor NRMSE mean |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Current JEPA points | `0.20` | `0/1/2` | `2.403e-02` | `6.383e-03` | `5.639e-03` | `2.401e-02` |
+| Masked-points JEPA | `0.20` | `0/1/2` | `2.489e-02` | `5.417e-03` | `5.729e-03` | `2.467e-02` |
+| Current JEPA points | `0.05` | `0/1/2` | `2.430e-02` | `5.468e-03` | `5.686e-03` | `2.617e-02` |
+| Masked-points JEPA | `0.05` | `0/1/2` | `2.409e-02` | `5.591e-03` | `5.611e-03` | `2.559e-02` |
+
+Post-training audit:
+
+- `runs/baseline/case1/adam200_bfgs0_seed0` contains `TestCase_1a/1b/1c_metrics.json` and `summary_metrics.json`.
+- No-JEPA sparse baseline contains `9/9` completed runs.
+- Masked-points sweep contains `6/6` completed runs.
+- Combined fair summary contains `21` formal run rows and `7` aggregate rows.
+- No `masked_smoke`, `ablation_smoke`, or other smoke directories are included in the combined fair summary.
+- Metrics are finite for all reviewed runs.
+- No-JEPA runs emit expected TensorFlow no-gradient warnings because `lambda_jepa=0.0` disables predictor/JEPA supervision.
+
+Interpretation:
+
+- Fair positive evidence exists only for the broader JEPA-LDNet sparse encoder family: under the same `Adam 200 / BFGS 0` optimizer budget, the sparse encoder JEPA runner is far better than Original LDNet Adam-only on Case `1a`.
+- This is not evidence that masked-points JEPA is better. Masked-points JEPA does not clearly beat no-JEPA or current point-target JEPA:
+  - at ratio `0.05`, masked-points is slightly better than current points and no-JEPA, but the difference is much smaller than seed variability.
+  - at ratio `0.20`, masked-points is worse than no-JEPA and current points.
+- These Adam-only results must not be presented as better than the author-budget Original LDNet `Adam+BFGS` baseline. The author-budget Case `1a` baseline remains much lower at NRMSE about `8.58e-03`.
+- Current evidence suggests the main gain is from learning an observation encoder / nonzero inferred initial latent state under sparse context, not from the current JEPA feature target itself.
+
+Next recommended method step:
+
+- Do not expand masked-points JEPA to Case `2/3` yet.
+- First improve the JEPA objective so it contributes beyond the sparse encoder:
+  - predict longer-horizon targets with `prediction_horizon > 2`;
+  - use target patches or time-separated targets where reconstruction is less redundant;
+  - add a real dynamics consistency loss only if latent targets from multiple context windows are implemented;
+  - evaluate on Case `3` long rollout after a small Case `1a` target-mode gate shows a clear benefit over no-JEPA.

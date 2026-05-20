@@ -2,7 +2,12 @@
 """Reproducible runner for the ADR notebook experiments TestCase 1a/1b/1c."""
 
 import argparse
+import hashlib
 import json
+import os
+import subprocess
+import sys
+import time
 from pathlib import Path
 
 import matplotlib
@@ -22,6 +27,38 @@ tf.keras.backend.set_floatx("float64")
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
+
+
+def current_git_commit():
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=REPO_ROOT,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except Exception:
+        return "unknown"
+
+
+def current_git_status():
+    try:
+        return subprocess.check_output(
+            ["git", "status", "--short"],
+            cwd=REPO_ROOT,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except Exception:
+        return "unknown"
+
+
+def command_text():
+    return " ".join([sys.executable] + sys.argv)
+
+
+def command_hash(command):
+    return hashlib.sha256(command.encode("utf-8")).hexdigest()[:16]
 
 
 CASE_CONFIGS = {
@@ -280,6 +317,7 @@ def run_case(
     seed=0,
     batch_samples=25,
 ):
+    start_time = time.time()
     config = CASE_CONFIGS[case_name]
     output_dir.mkdir(parents=True, exist_ok=True)
     adam_epochs = config["adam_epochs"] if adam_epochs is None else adam_epochs
@@ -349,6 +387,8 @@ def run_case(
 
     print("Normalized RMSE:       %1.3e" % nrmse)
     print("Pearson dissimilarity: %1.3e" % pearson_dissimilarity)
+    elapsed_seconds = time.time() - start_time
+    command = command_text()
 
     save_loss_plot(
         opt, adam_epochs, output_dir / f"TestCase_{case_name}_loss.png"
@@ -360,7 +400,9 @@ def run_case(
     plt.close(fig)
 
     result = {
+        "run_status": "completed",
         "case": case_name,
+        "algorithm": "Original-LDNet",
         "nrmse": float(nrmse),
         "pearson_dissimilarity": float(pearson_dissimilarity),
         "reference": config["reference"],
@@ -370,6 +412,12 @@ def run_case(
         "batch_samples": batch_samples,
         "loss_train_last": float(opt.loss_train_history[-1].numpy()),
         "loss_valid_last": float(opt.loss_valid_history[-1].numpy()),
+        "elapsed_seconds": elapsed_seconds,
+        "command": command,
+        "command_hash": command_hash(command),
+        "git_commit": current_git_commit(),
+        "git_status_short": current_git_status(),
+        "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES", ""),
     }
     result_path = output_dir / f"TestCase_{case_name}_metrics.json"
     result_path.write_text(json.dumps(result, indent=2) + "\n")

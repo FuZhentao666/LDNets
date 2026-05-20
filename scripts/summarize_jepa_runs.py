@@ -36,6 +36,9 @@ ROW_FIELDS = [
     "lambda_jepa",
     "lambda_smooth",
     "ema_decay",
+    "target_mode",
+    "mask_ratio",
+    "target_time_strategy",
     "git_commit",
     "dirty_worktree",
     "cuda_visible_devices",
@@ -67,6 +70,19 @@ def row_from_metrics(metrics_path):
     config = metrics.get("config") or (load_json(config_path) if config_path.exists() else {})
     sensor_indices = config.get("sensor_indices", [])
     run_status = metrics.get("run_status") or config.get("run_status") or "completed"
+    target_mode = get_arg(
+        config,
+        "target_mode",
+        config.get("target_selection", {}).get("mode") or "points",
+    )
+    mask_ratio = get_arg(config, "mask_ratio", config.get("target_selection", {}).get("mask_ratio"))
+    if target_mode == "points":
+        mask_ratio = None
+    target_time_strategy = get_arg(
+        config,
+        "target_time_strategy",
+        config.get("target_selection", {}).get("time_strategy") or "next",
+    )
     row = {
         "run_dir": str(metrics_path.parent),
         "run_status": run_status,
@@ -81,6 +97,9 @@ def row_from_metrics(metrics_path):
         "lambda_jepa": config.get("loss", {}).get("lambda_jepa"),
         "lambda_smooth": config.get("loss", {}).get("lambda_smooth"),
         "ema_decay": config.get("loss", {}).get("ema_decay"),
+        "target_mode": target_mode,
+        "mask_ratio": mask_ratio,
+        "target_time_strategy": target_time_strategy,
         "git_commit": config.get("git_commit"),
         "dirty_worktree": bool(config.get("git_status_short")),
         "cuda_visible_devices": config.get("cuda_visible_devices"),
@@ -171,6 +190,9 @@ def write_markdown(rows, aggregate, path, group_fields):
         "lambda_jepa",
         "lambda_smooth",
         "ema_decay",
+        "target_mode",
+        "mask_ratio",
+        "target_time_strategy",
         "nrmse",
         "pearson_dissimilarity",
         "sensor_nrmse",
@@ -216,7 +238,10 @@ def build_parser():
     )
     parser.add_argument(
         "--aggregate-by",
-        default="case,sensor_ratio,lambda_jepa,lambda_smooth,ema_decay",
+        default=(
+            "case,sensor_ratio,lambda_jepa,lambda_smooth,ema_decay,"
+            "target_mode,mask_ratio,target_time_strategy"
+        ),
         help="Comma-separated row fields used for aggregate mean/std tables.",
     )
     return parser

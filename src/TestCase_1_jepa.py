@@ -120,6 +120,24 @@ def build_parser():
     parser.add_argument("--context-steps", type=int, default=1)
     parser.add_argument("--prediction-horizon", type=int, default=1)
     parser.add_argument("--target-points", type=int, default=32)
+    parser.add_argument(
+        "--target-mode",
+        choices=["points", "masked-points", "future-patches"],
+        default="points",
+        help="How to select JEPA target points; 'points' preserves the original behavior.",
+    )
+    parser.add_argument(
+        "--mask-ratio",
+        type=float,
+        default=0.5,
+        help="Maximum fraction of candidate hidden points used by masked target modes.",
+    )
+    parser.add_argument(
+        "--target-time-strategy",
+        choices=["next", "random-future", "horizon"],
+        default="next",
+        help="How to select future JEPA target times.",
+    )
     parser.add_argument("--embedding-dim", type=int, default=32)
     parser.add_argument("--encoder-width", type=int, default=32)
     parser.add_argument("--predictor-width", type=int, default=32)
@@ -173,15 +191,38 @@ def choose_indices(num_points, args, rng):
     else:
         sensor_count = args.sensor_count
     sensor_count = max(1, min(num_points, sensor_count))
-    target_count = max(1, min(num_points, args.target_points))
     sensor_indices = np.sort(rng.choice(num_points, sensor_count, replace=False))
-    target_indices = np.sort(rng.choice(num_points, target_count, replace=False))
+
+    all_indices = np.arange(num_points)
+    if args.target_mode in {"masked-points", "future-patches"}:
+        candidate_indices = np.setdiff1d(all_indices, sensor_indices, assume_unique=True)
+        if candidate_indices.size == 0:
+            candidate_indices = all_indices
+        mask_count = int(round(candidate_indices.size * args.mask_ratio))
+        target_count = max(1, min(candidate_indices.size, args.target_points, mask_count))
+    else:
+        candidate_indices = all_indices
+        target_count = max(1, min(num_points, args.target_points))
+
+    if args.target_mode == "future-patches" and candidate_indices.size > target_count:
+        start = rng.integers(0, candidate_indices.size - target_count + 1)
+        target_indices = candidate_indices[start : start + target_count]
+    else:
+        target_indices = rng.choice(candidate_indices, target_count, replace=False)
+    target_indices = np.sort(target_indices)
     return sensor_indices.astype(np.int32), target_indices.astype(np.int32)
 
 
-def target_time_indices(num_times, context_steps, prediction_horizon):
-    start = min(max(1, context_steps), num_times - 1)
-    count = max(1, min(prediction_horizon, num_times - start))
+def target_time_indices(num_times, args, rng):
+    start = min(max(1, args.context_steps), num_times - 1)
+    count = max(1, min(args.prediction_horizon, num_times - start))
+    if args.target_time_strategy == "random-future":
+        candidates = np.arange(start, num_times, dtype=np.int32)
+        return np.sort(rng.choice(candidates, count, replace=False)).astype(np.int32)
+    if args.target_time_strategy == "horizon":
+        return np.unique(
+            np.linspace(start, num_times - 1, count, dtype=np.int32)
+        ).astype(np.int32)
     return np.arange(start, start + count, dtype=np.int32)
 
 
@@ -416,9 +457,7 @@ def run(args):
 
     dataset_train, dataset_valid, dataset_tests = load_case_data(config)
     sensor_indices, target_indices = choose_indices(dataset_train["num_points"], args, rng)
-    time_indices = target_time_indices(
-        dataset_train["num_times"], args.context_steps, args.prediction_horizon
-    )
+    time_indices = target_time_indices(dataset_train["num_times"], args, rng)
 
     train_chunks = dataset_chunks(dataset_train, args.batch_samples)
     valid_chunks = dataset_chunks(dataset_valid, args.batch_samples)
@@ -534,6 +573,12 @@ def run(args):
         "sensor_indices": sensor_indices.tolist(),
         "target_indices": target_indices.tolist(),
         "target_time_indices": time_indices.tolist(),
+        "target_selection": {
+            "mode": args.target_mode,
+            "mask_ratio": args.mask_ratio,
+            "target_points": args.target_points,
+            "time_strategy": args.target_time_strategy,
+        },
         "model": {
             "latent_dim": config["num_latent_states"],
             "embedding_dim": args.embedding_dim,
