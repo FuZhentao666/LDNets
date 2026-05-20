@@ -19,6 +19,10 @@ METRIC_FIELDS = [
     "loss_train_last",
     "loss_valid_last",
     "elapsed_seconds",
+    "horizon_nrmse_first",
+    "horizon_nrmse_final",
+    "horizon_nrmse_max",
+    "parameter_count",
 ]
 
 
@@ -31,14 +35,24 @@ ROW_FIELDS = [
     "sensor_count",
     "adam_epochs",
     "bfgs_epochs",
+    "learning_rate",
+    "batch_samples",
     "warmup_epochs",
     "jepa_ramp_epochs",
     "lambda_jepa",
     "lambda_smooth",
     "ema_decay",
+    "context_steps",
     "target_mode",
     "mask_ratio",
+    "prediction_horizon",
+    "target_points",
+    "target_count",
+    "time_count",
     "target_time_strategy",
+    "embedding_dim",
+    "encoder_width",
+    "predictor_width",
     "git_commit",
     "dirty_worktree",
     "cuda_visible_devices",
@@ -64,6 +78,22 @@ def number_or_none(value):
         return None
 
 
+def sequence_metric(values, reducer):
+    if not isinstance(values, list):
+        return None
+    numbers = [number_or_none(value) for value in values]
+    numbers = [value for value in numbers if value is not None]
+    if not numbers:
+        return None
+    if reducer == "first":
+        return numbers[0]
+    if reducer == "final":
+        return numbers[-1]
+    if reducer == "max":
+        return max(numbers)
+    raise ValueError(f"Unknown reducer: {reducer}")
+
+
 def row_from_metrics(metrics_path):
     metrics = load_json(metrics_path)
     config_path = metrics_path.with_name("config.json")
@@ -83,6 +113,16 @@ def row_from_metrics(metrics_path):
         "target_time_strategy",
         config.get("target_selection", {}).get("time_strategy") or "next",
     )
+    prediction_horizon = get_arg(
+        config,
+        "prediction_horizon",
+        config.get("target_selection", {}).get("prediction_horizon") or 1,
+    )
+    target_points = get_arg(
+        config,
+        "target_points",
+        config.get("target_selection", {}).get("target_points"),
+    )
     row = {
         "run_dir": str(metrics_path.parent),
         "run_status": run_status,
@@ -92,14 +132,28 @@ def row_from_metrics(metrics_path):
         "sensor_count": len(sensor_indices) if sensor_indices else get_arg(config, "sensor_count"),
         "adam_epochs": get_arg(config, "adam_epochs"),
         "bfgs_epochs": get_arg(config, "bfgs_epochs"),
+        "learning_rate": get_arg(config, "learning_rate"),
+        "batch_samples": get_arg(config, "batch_samples"),
         "warmup_epochs": config.get("loss", {}).get("warmup_epochs"),
         "jepa_ramp_epochs": config.get("loss", {}).get("jepa_ramp_epochs"),
         "lambda_jepa": config.get("loss", {}).get("lambda_jepa"),
         "lambda_smooth": config.get("loss", {}).get("lambda_smooth"),
         "ema_decay": config.get("loss", {}).get("ema_decay"),
+        "context_steps": get_arg(
+            config,
+            "context_steps",
+            config.get("target_selection", {}).get("context_steps"),
+        ),
         "target_mode": target_mode,
         "mask_ratio": mask_ratio,
+        "prediction_horizon": prediction_horizon,
+        "target_points": target_points,
+        "target_count": config.get("target_selection", {}).get("target_count"),
+        "time_count": config.get("target_selection", {}).get("time_count"),
         "target_time_strategy": target_time_strategy,
+        "embedding_dim": get_arg(config, "embedding_dim"),
+        "encoder_width": get_arg(config, "encoder_width"),
+        "predictor_width": get_arg(config, "predictor_width"),
         "git_commit": config.get("git_commit"),
         "dirty_worktree": bool(config.get("git_status_short")),
         "cuda_visible_devices": config.get("cuda_visible_devices"),
@@ -107,6 +161,10 @@ def row_from_metrics(metrics_path):
     }
     for field in METRIC_FIELDS:
         row[field] = metrics.get(field)
+    row["horizon_nrmse_first"] = sequence_metric(metrics.get("horizon_nrmse"), "first")
+    row["horizon_nrmse_final"] = sequence_metric(metrics.get("horizon_nrmse"), "final")
+    row["horizon_nrmse_max"] = sequence_metric(metrics.get("horizon_nrmse"), "max")
+    row["parameter_count"] = metrics.get("parameter_count")
     return row
 
 
@@ -187,15 +245,23 @@ def write_markdown(rows, aggregate, path, group_fields):
         "seed",
         "sensor_ratio",
         "sensor_count",
+        "batch_samples",
         "lambda_jepa",
         "lambda_smooth",
         "ema_decay",
+        "context_steps",
         "target_mode",
         "mask_ratio",
+        "prediction_horizon",
+        "target_points",
+        "target_count",
+        "time_count",
         "target_time_strategy",
         "nrmse",
         "pearson_dissimilarity",
         "sensor_nrmse",
+        "horizon_nrmse_final",
+        "horizon_nrmse_max",
         "elapsed_seconds",
     ]
     aggregate_fields = group_fields + [
@@ -240,7 +306,7 @@ def build_parser():
         "--aggregate-by",
         default=(
             "case,sensor_ratio,lambda_jepa,lambda_smooth,ema_decay,"
-            "target_mode,mask_ratio,target_time_strategy"
+            "target_mode,mask_ratio,prediction_horizon,target_points,target_time_strategy"
         ),
         help="Comma-separated row fields used for aggregate mean/std tables.",
     )

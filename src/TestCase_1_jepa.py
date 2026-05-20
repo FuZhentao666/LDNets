@@ -576,8 +576,14 @@ def run(args):
         "target_selection": {
             "mode": args.target_mode,
             "mask_ratio": args.mask_ratio,
+            "context_steps": args.context_steps,
+            "prediction_horizon": args.prediction_horizon,
             "target_points": args.target_points,
             "time_strategy": args.target_time_strategy,
+            "target_count": len(target_indices),
+            "time_count": len(time_indices),
+            "target_indices": target_indices.tolist(),
+            "target_time_indices": time_indices.tolist(),
         },
         "model": {
             "latent_dim": config["num_latent_states"],

@@ -1030,3 +1030,80 @@ Next recommended method step:
   - use target patches or time-separated targets where reconstruction is less redundant;
   - add a real dynamics consistency loss only if latent targets from multiple context windows are implemented;
   - evaluate on Case `3` long rollout after a small Case `1a` target-mode gate shows a clear benefit over no-JEPA.
+
+### 2026-05-20 [FORMAL] Stage 1B Stronger JEPA Target Gate
+
+Goal: test whether a stronger JEPA target objective gives stable benefit over the sparse observation encoder baseline before expanding JEPA runs to Case `2/3`.
+
+Code updates:
+
+- `src/TestCase_1_jepa.py`
+  - added explicit `target_selection` provenance fields: `context_steps`, `prediction_horizon`, `target_count`, `time_count`, `target_indices`, and `target_time_indices`.
+  - training logic, model modules, loss definitions, optimizer schedule, and evaluation logic are unchanged.
+- `scripts/summarize_jepa_runs.py`
+  - added summary fields for `prediction_horizon`, `target_points`, `context_steps`, `target_count`, `time_count`, model widths, batch size, learning rate, `horizon_nrmse_first/final/max`, and parameter count.
+  - default aggregate grouping now distinguishes long-horizon and patch-target JEPA settings.
+
+Experiment matrix:
+
+- Case: `1a`
+- Optimizer budget: `Adam 200`, `BFGS 0`
+- Shared training args: `--warmup-epochs 20`, `--jepa-ramp-epochs 80`, `--batch-samples 25`, `--skip-figures`
+- Sensor ratios: `0.20`, `0.05`
+- Seeds: `0/1/2`
+- Families:
+  - `no_jepa_sparse`: `lambda_jepa=0.0`, `target-mode=points`, `prediction_horizon=1`, `target-time-strategy=next`
+  - `current_points`: `lambda_jepa=0.1`, `target-mode=points`, `prediction_horizon=1`, `target-time-strategy=next`
+  - `long_horizon_patch`: `lambda_jepa=0.1`, `target-mode=future-patches`, `prediction_horizon=8`, `target-time-strategy=horizon`, `target-points=32`, `mask-ratio=0.5`
+
+Formal outputs:
+
+- `runs/jepa/case1a/stage1b_stronger_target_gate/summary.md`
+- `runs/jepa/case1a/stage1b_stronger_target_gate/summary.csv`
+- 18 run directories under:
+  - `runs/jepa/case1a/stage1b_stronger_target_gate/no_jepa_sparse/`
+  - `runs/jepa/case1a/stage1b_stronger_target_gate/current_points/`
+  - `runs/jepa/case1a/stage1b_stronger_target_gate/long_horizon_patch/`
+
+Aggregate results:
+
+| Family | Ratio | Seeds | NRMSE mean | NRMSE std | Pearson dissim. mean | Pearson dissim. std | Sensor NRMSE mean | Sensor NRMSE std |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `no_jepa_sparse` | `0.05` | `0/1/2` | `2.455e-02` | `6.352e-03` | `5.868e-03` | `3.134e-03` | `2.687e-02` | `8.404e-03` |
+| `current_points` | `0.05` | `0/1/2` | `2.430e-02` | `5.468e-03` | `5.686e-03` | `2.655e-03` | `2.617e-02` | `6.210e-03` |
+| `long_horizon_patch` | `0.05` | `0/1/2` | `2.551e-02` | `4.685e-03` | `5.940e-03` | `2.450e-03` | `2.741e-02` | `6.412e-03` |
+| `no_jepa_sparse` | `0.20` | `0/1/2` | `2.386e-02` | `6.049e-03` | `5.536e-03` | `2.898e-03` | `2.395e-02` | `6.450e-03` |
+| `current_points` | `0.20` | `0/1/2` | `2.403e-02` | `6.383e-03` | `5.639e-03` | `3.087e-03` | `2.401e-02` | `6.502e-03` |
+| `long_horizon_patch` | `0.20` | `0/1/2` | `2.396e-02` | `5.987e-03` | `5.572e-03` | `2.884e-03` | `2.412e-02` | `6.450e-03` |
+
+Post-training audit:
+
+- Two RTX 4090 GPUs were used with one training process per GPU; final `nvidia-smi` showed both GPUs idle with only display processes.
+- The execution worker agent did not actually start GPU training before shutdown, so the main agent executed the 18-run matrix directly. A separate reviewer agent audited the completed outputs.
+- 18/18 formal runs have `config.json`, `metrics.json`, `run.log`, and `run_status=completed`.
+- The matrix has no missing or extra `family x ratio x seed` combinations.
+- Key config values match the plan: Case `1a`, `Adam 200`, `BFGS 0`, `lr=0.01`, `batch_samples=25`, `warmup=20`, `ramp=80`, `lambda_smooth=1e-4`, `ema_decay=0.99`.
+- Metrics are finite for all reviewed runs.
+- `future-patches` runs have `target_count=32`, `time_count=8`, and `target_time_indices=[1,15,29,43,57,71,85,100]`.
+- `future-patches` target indices do not overlap with sensor indices in the reviewed runs.
+- `summary.csv` contains 18 run rows plus header; `summary.md` contains 6 aggregate rows with count `3`.
+- Some summary rows record `dirty_worktree=True` because provenance/summary-field code changes were active during the run. This does not affect numerical validity but should be avoided for later final paper-quality sweeps by committing code before long runs.
+
+Interpretation:
+
+- Engineering quality gate passed: the Stage `1B` target-gate matrix is complete, reproducible, and numerically stable.
+- Method success gate did not pass:
+  - At ratio `0.20`, `long_horizon_patch` is essentially tied with the other two families and is slightly worse than `no_jepa_sparse` on NRMSE and sensor NRMSE.
+  - At ratio `0.05`, `long_horizon_patch` is worse than both `current_points` and `no_jepa_sparse`.
+  - All differences are smaller than seed standard deviation, so this is not evidence of a stable JEPA target-loss improvement.
+- The current best scientific reading remains: the useful improvement is the sparse observation encoder / inferred latent initialization, while the present JEPA feature objective has not yet shown independent benefit.
+- The current `future-patches` implementation is a fixed per-run target selection, not per-batch dynamic patch resampling and not a geometry-aware patch sampler. Do not describe it as a full dynamic patch JEPA objective.
+
+Next recommended method step:
+
+- Do not run full Case `2/3` JEPA sweeps yet.
+- Prioritize a real objective change before more large experiments:
+  - implement multi-context latent targets, where later context windows produce teacher latents for `z_t`;
+  - add a dynamics consistency loss between rolled latent states and teacher context latents;
+  - optionally implement dynamic target resampling per epoch/batch and geometry-aware spatial patches.
+- If Case `2/3` is run next, label it as diagnostic only and keep `no_jepa_sparse` and `current_points` as mandatory controls.
