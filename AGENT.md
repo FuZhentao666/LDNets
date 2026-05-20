@@ -451,29 +451,57 @@ comparison.png
 config.json
 ```
 
-## 6. 下一步优先级
+## 6. 当前结论和下一步优先级
 
-立即执行：
+已完成的可靠结论：
 
-1. 补跑 Case 3 full-budget baseline：`BFGS 5000`。
-2. 补跑 Case 2 full-budget baseline：`BFGS 10000`。
-3. 设计并实现 `src/models.py`、`src/losses.py`、`src/metrics.py` 的最小共享模块。
-4. 先在 Case 1a 实现 JEPA-LDNet smoke test。
-5. 在 Case 1a/1b/1c 完成 sensor ratio sweep。
+- 原始 LDNets Case 1/2/3 复现路径可用，服务器 TensorFlow/GPU 环境可训练。
+- sparse observation encoder / inferred latent initialization 是当前最稳定的改进方向。
+- Stage 1B 的 points / long-horizon patch JEPA 没有稳定超过 `no_jepa_sparse`。
+- Stage 1C 的 multi-context latent target 工程路径可用，但直接 latent MSE dynamics consistency 未带来正向精度收益。
+- 不能把当前 JEPA objective 作为已验证的主创新 claim。
+
+已实现的 Stage 1C 模块：
+
+- `multi-context-latent` target mode。
+- EMA teacher encoder 输出 teacher latent 和 teacher embedding。
+- dynamics consistency:
+
+```text
+MSE(z_rollout, stopgrad(z_teacher))
+```
+
+- epoch-level dynamic target/time resampling。
+- summary/provenance fields for `lambda_dyn_consistency`, teacher windows, resampling policy, and dynamics metrics。
+
+下一步优先级：
+
+1. 不要直接扩展 Stage 1C dynamics objective 到 Case `2/3`。
+2. 如果继续 JEPA 方向，先做更小 gate：
+   - normalized latent MSE 或 cosine latent consistency；
+   - learned projection head before latent consistency；
+   - `lambda_dyn_consistency=0.001/0.003/0.01`；
+   - delayed dynamics schedule after reconstruction stabilizes；
+   - teacher windows based on sensor-observable context to reduce hidden-patch train/test mismatch。
+3. 如果追求短期论文稳定性，优先围绕 sparse observation encoder 展开：
+   - sparse sensor ratio robustness；
+   - seed stability；
+   - Case 1a/1b/1c transfer；
+   - 与 original LDNet Adam-only 和 author-budget Adam+BFGS 分开对比。
+4. Case `2/3` 后续实验应标注为 diagnostic，且必须保留 `no_jepa_sparse` 和 `current_points` 控制组。
 
 短期目标：
 
-- 拿到 JEPA-LDNet 在 sparse observation 上的第一组正向结果。
-- 输出一张 sensor ratio vs NRMSE 曲线。
-- 明确 JEPA 是否是主论文创新核心。
+- 将 sparse encoder 的正向证据整理成清晰 baseline 表和曲线。
+- 对 JEPA objective 做一轮更弱/归一化目标的小规模 gate。
+- 决定论文主创新是否从 JEPA 调整为 sparse-observation latent initialization + diagnostic self-supervised objectives。
 
 中期目标：
 
-- 将 JEPA-LDNet 迁移到 Case 3 和 Case 2。
-- 实现 operator-token hybrid。
-- 完成关键消融。
+- 在小 gate 明确正向后，再迁移到 Case `3` long rollout。
+- 如果 JEPA 仍无正向收益，转向 operator-token hybrid 或 uncertainty/probabilistic rollout。
 
 长期目标：
 
 - 形成 World-LDNet 论文级实验矩阵。
-- 决定是否扩展 probabilistic rollout 或 control/planning。
+- 明确哪些模块是 verified contribution，哪些只是 negative ablation 或 future work。

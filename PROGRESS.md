@@ -1107,3 +1107,128 @@ Next recommended method step:
   - add a dynamics consistency loss between rolled latent states and teacher context latents;
   - optionally implement dynamic target resampling per epoch/batch and geometry-aware spatial patches.
 - If Case `2/3` is run next, label it as diagnostic only and keep `no_jepa_sparse` and `current_points` as mandatory controls.
+
+### 2026-05-20 [FORMAL] Stage 1C Multi-Context Latent Dynamics Gate
+
+Goal: implement and gate a real multi-context latent target objective before expanding JEPA to Case `2/3`.
+
+Code commit:
+
+- `fb3627c Add multi-context JEPA dynamics gate`
+
+Code updates:
+
+- `src/models.py`
+  - target encoder can now return both teacher latent and teacher embedding.
+  - added `encode_teacher_contexts(...)` for future context windows.
+- `src/losses.py`
+  - added stop-gradient teacher latent MSE for dynamics consistency.
+- `src/TestCase_1_jepa.py`
+  - added `--target-mode multi-context-latent`.
+  - added `--lambda-dyn-consistency` / `--lambda-dyn`.
+  - added `--teacher-context-steps`, `--teacher-context-stride`, `--dynamic-target-resampling`, and `--patch-resample-every {never,epoch,batch}`.
+  - implemented future teacher context windows and epoch-level dynamic target/time resampling.
+  - sparse sensor indices remain fixed per run; only JEPA target points/times are resampled.
+  - JEPA and dynamics weights share the existing warmup/ramp schedule.
+- `scripts/summarize_jepa_runs.py`
+  - added dynamics consistency metrics and multi-context provenance fields.
+
+Stage 1C algorithm:
+
+```text
+Inputs:
+  sparse sensor context:       (x_sensor, t_0:Tc, y_sensor)
+  physical/input condition:    parameters or input signal summary
+  future teacher windows:      target points over t_k : t_k + stride * teacher_context_steps
+
+Forward:
+  z0, h_context = E_phi(sparse sensor context)
+  z_1:T = T_theta rollout(z0, condition)
+  y_hat = D_omega(z_1:T, x_full)
+  z_teacher_k, h_teacher_k = E_bar(future teacher window k)
+  h_pred_k = P_psi(z_k, t_k, condition, h_context)
+
+Loss:
+  L = lambda_rec * MSE(y_hat, y)
+    + lambda_jepa * MSE(h_pred, stopgrad(h_teacher))
+    + lambda_dyn_consistency * MSE(z_rollout, stopgrad(z_teacher))
+    + lambda_smooth * mean(||z_t - z_{t-1}||^2)
+    + optional alpha_reg * weight_l2
+```
+
+Smoke/probe:
+
+- Smoke: Case `1a`, `sr=0.20`, `seed=0`, `Adam 5`, `BFGS 0`, `lambda_dyn_consistency=0.1`.
+  - Output: `runs/jepa/case1a/stage1c_multi_context_dyn_gate/smoke/sr020_seed0_adam5_graph`
+  - Result: completed, but validation dynamics consistency MSE was much larger than reconstruction MSE, so `lambda_dyn=0.1` was too strong.
+- Probe: Case `1a`, `sr=0.20`, `seed=0`, `Adam 20`, `BFGS 0`.
+  - `multi_context_no_dyn`: NRMSE `2.182e-01`, Sensor NRMSE `2.354e-01`.
+  - `multi_context_dyn001`: NRMSE `2.136e-01`, Sensor NRMSE `2.247e-01`.
+  - Decision: use conservative `lambda_dyn_consistency=0.01` for the formal gate, while keeping `multi_context_no_dyn` as an isolation control.
+
+Formal matrix:
+
+- Output root: `runs/jepa/case1a/stage1c_multi_context_dyn_gate/formal`
+- Summary files:
+  - `runs/jepa/case1a/stage1c_multi_context_dyn_gate/formal/summary.md`
+  - `runs/jepa/case1a/stage1c_multi_context_dyn_gate/formal/summary.csv`
+- Case: `1a`
+- Budget: `Adam 200`, `BFGS 0`
+- Shared args: `--learning-rate 0.01`, `--batch-samples 25`, `--warmup-epochs 20`, `--jepa-ramp-epochs 80`, `--lambda-smooth 1e-4`, `--ema-decay 0.99`, `--skip-figures`
+- Sensor ratios: `0.20`, `0.05`
+- Seeds: `0/1/2`
+- Families:
+  - `no_jepa_sparse`: `target-mode=points`, `lambda_jepa=0.0`, `lambda_dyn_consistency=0.0`
+  - `current_points`: `target-mode=points`, `lambda_jepa=0.1`, `lambda_dyn_consistency=0.0`
+  - `multi_context_no_dyn`: `target-mode=multi-context-latent`, `prediction_horizon=8`, `teacher_context_steps=2`, `teacher_context_stride=4`, epoch target resampling, `lambda_dyn_consistency=0.0`
+  - `multi_context_dyn001`: same multi-context setup with `lambda_dyn_consistency=0.01`
+
+Formal aggregate results:
+
+| Family | Ratio | Seeds | NRMSE mean | NRMSE std | Pearson dissim. mean | Pearson dissim. std | Sensor NRMSE mean | Sensor NRMSE std |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `no_jepa_sparse` | `0.05` | `0/1/2` | `2.455e-02` | `6.352e-03` | `5.868e-03` | `3.134e-03` | `2.687e-02` | `8.404e-03` |
+| `current_points` | `0.05` | `0/1/2` | `2.430e-02` | `5.468e-03` | `5.686e-03` | `2.655e-03` | `2.617e-02` | `6.210e-03` |
+| `multi_context_no_dyn` | `0.05` | `0/1/2` | `2.450e-02` | `5.427e-03` | `5.768e-03` | `2.649e-03` | `2.652e-02` | `5.780e-03` |
+| `multi_context_dyn001` | `0.05` | `0/1/2` | `2.646e-02` | `5.133e-03` | `6.431e-03` | `2.802e-03` | `2.859e-02` | `5.272e-03` |
+| `no_jepa_sparse` | `0.20` | `0/1/2` | `2.386e-02` | `6.049e-03` | `5.536e-03` | `2.898e-03` | `2.395e-02` | `6.450e-03` |
+| `current_points` | `0.20` | `0/1/2` | `2.403e-02` | `6.383e-03` | `5.639e-03` | `3.087e-03` | `2.401e-02` | `6.502e-03` |
+| `multi_context_no_dyn` | `0.20` | `0/1/2` | `2.391e-02` | `6.092e-03` | `5.542e-03` | `2.932e-03` | `2.404e-02` | `6.488e-03` |
+| `multi_context_dyn001` | `0.20` | `0/1/2` | `2.480e-02` | `6.183e-03` | `5.933e-03` | `2.995e-03` | `2.504e-02` | `6.807e-03` |
+
+Post-training audit:
+
+- 24/24 formal runs completed.
+- Every formal run has `config.json`, `metrics.json`, and `run.log`.
+- `summary.csv` contains 24 run rows; `summary.md` contains 8 aggregate rows.
+- All formal configs use clean provenance: `git_commit=fb3627c`, `git_status_short=""`, and `dirty_worktree=False`.
+- Multi-context runs record:
+  - `multi_context.enabled=true`
+  - `teacher_context_time_indices`
+  - `patch_resample_every_effective=epoch`
+  - `target_resample_count=200`
+  - `sensors_resampled=false`
+- Two RTX 4090 GPUs were used with one training process per GPU; final `nvidia-smi` showed both GPUs idle with only display processes.
+
+Interpretation:
+
+- Engineering gate passed: multi-context latent targets, teacher latent encoding, dynamics consistency, epoch-level dynamic target resampling, metrics, summary, and provenance all work.
+- Method success gate did not pass:
+  - `multi_context_no_dyn` is comparable to `no_jepa_sparse` and `current_points`, but it does not stably exceed both baselines across ratios.
+  - `multi_context_dyn001` is worse than both baselines at both sensor ratios in aggregate.
+  - The dynamics loss reduces teacher/rollout latent mismatch, but this did not translate into better full-field NRMSE.
+- Do not claim Stage 1C dynamics consistency as a positive accuracy improvement.
+- Current scientific position:
+  - sparse observation encoding remains the robust useful component;
+  - current JEPA embedding targets are neutral/weak;
+  - current direct latent MSE dynamics consistency is too blunt and can hurt reconstruction accuracy.
+
+Next recommended method step:
+
+- Do not expand this Stage 1C dynamics objective to Case `2/3`.
+- If continuing JEPA, revise the objective before more large runs:
+  - use normalized/cosine latent consistency or learned projection before latent MSE;
+  - apply dynamics consistency only on a delayed schedule or with a much smaller sweep such as `0.001/0.003/0.01`;
+  - consider teacher windows from sensor-only context instead of hidden target patches to reduce train/test mismatch;
+  - add an adaptive loss balance based on reconstruction vs latent loss scale.
+- Alternative near-term paper direction: frame sparse observation encoder + latent initialization as the validated contribution, and keep JEPA objectives as negative/diagnostic ablations.
