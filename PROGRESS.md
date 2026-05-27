@@ -1232,3 +1232,159 @@ Next recommended method step:
   - consider teacher windows from sensor-only context instead of hidden target patches to reduce train/test mismatch;
   - add an adaptive loss balance based on reconstruction vs latent loss scale.
 - Alternative near-term paper direction: frame sparse observation encoder + latent initialization as the validated contribution, and keep JEPA objectives as negative/diagnostic ablations.
+
+## 2026-05-27 JEPA Performance Branch Handoff
+
+Branch:
+
+- Current experiment branch: `jepa-performance-optimization`
+- Latest committed base before this handoff: `f43905b Add JEPA redesign gate experiments`
+- New uncommitted code at handoff time:
+  - `src/TestCase_1_jepa.py`: adds `target_mode=two-scale` dual-target JEPA path.
+  - `scripts/summarize_jepa_runs.py`: adds dual-target summary fields.
+
+Primary output roots:
+
+- Near-convergence matrix: `runs/jepa/case1_near_convergence_matrix_20260521/`
+- Redesign lane: `runs/jepa/jepa_test_redesign_20260522/`
+- Dual-target gate: `runs/jepa/jepa_test_redesign_20260522/case1a/gate1_dual_target/`
+
+### Near-Convergence and Optimizer Conclusions
+
+Completed before the redesign gate:
+
+- Deep Adam matrix: `no_jepa_sparse`, `current_points`, and `multi_context_no_dyn`; seeds `0/1/2`; sensor ratios `0.20/0.05`; Adam budgets `500/1000/2000`.
+- Narrow Adam gate: Adam `3000/4000` for `no_jepa_sparse` and `multi_context_no_dyn`.
+- BFGS refine probe: Adam candidate budget plus BFGS `150`.
+
+BFGS refine results:
+
+| Ratio | Method | Best budget | Mean NRMSE |
+| ---: | --- | --- | ---: |
+| `0.20` | `no_jepa_sparse` | Adam4000+BFGS150 | `0.00207916` |
+| `0.20` | `multi_context_no_dyn` | Adam4000+BFGS150 | `0.00232791` |
+| `0.05` | `no_jepa_sparse` | Adam3000+BFGS150 | `0.00265310` |
+| `0.05` | `multi_context_no_dyn` | Adam4000+BFGS150 | `0.00273172` |
+
+Interpretation:
+
+- Short Adam runs were not sufficient to judge near convergence.
+- BFGS materially improved both families.
+- Even after BFGS, `multi_context_no_dyn` did not beat `no_jepa_sparse`.
+- The strongest current accuracy direction is still the non-JEPA sparse encoder/baseline path.
+
+Additional probes:
+
+- Lambda ablation for `multi-context-latent`:
+  - `lambda_jepa=0`: mean NRMSE `0.00691141`
+  - `lambda_jepa=0.03`: `0.00753850`
+  - `lambda_jepa=0.1`: `0.0157908`
+  - Decision: lambda tuning did not rescue the old JEPA objective.
+- Horizon probe:
+  - horizon 2: `0.00834252`
+  - horizon 4: `0.0119670`
+  - horizon 8: `0.01579084`
+  - Decision: shorter horizon is less harmful but still not better than the no-JEPA baseline.
+- AdamW sanity:
+  - Adam baseline seeds `1/2`: `0.00681844`
+  - AdamW `wd=1e-5`: `0.00884843`
+  - AdamW `wd=1e-4`: `0.00661984`
+  - Decision: AdamW did not pass a stable gate and should not be expanded without a positive JEPA target/loss candidate.
+
+### Geometry/Loss Redesign Tests
+
+Implemented redesign features:
+
+- Geometry-aware predictor: JEPA predictor can receive target patch center/span/scale id.
+- JEPA loss options: `mse`, `cosine`, and `variance-normalized-mse`.
+- Redesign summaries record embedding norm/std/nonfinite diagnostics.
+
+Gate 1 baseline/candidates at Case `1a`, sensor ratio `0.20`, seeds `1/2`, Adam `2000`, BFGS `0`:
+
+| Method | seed1 NRMSE | seed2 NRMSE | Mean NRMSE | Decision |
+| --- | ---: | ---: | ---: | --- |
+| `no_jepa_sparse` | `0.00553467` | `0.00853027` | `0.00703247` | baseline |
+| `geometry_aware_cosine` | `0.00612418` | `0.00784304` | `0.00698361` | fails strict gate; only `0.7%` mean gain and seed1 is worse |
+| `geometry_aware_mse` | `0.00481210` | `0.01642034` | `0.01061622` | fails hard; seed2 collapses |
+
+Loss-off matched control:
+
+- Setup: same target/geometry/resampling as `geometry_aware_cosine`, but `lambda_jepa=0`.
+- Output: `runs/jepa/jepa_test_redesign_20260522/case1a/gate1_loss_off/summary.md`
+
+| Method | seed1 NRMSE | seed2 NRMSE | Mean NRMSE |
+| --- | ---: | ---: | ---: |
+| `geometry_aware_loss_off` | `0.00658349` | `0.00824450` | `0.00741399` |
+| `geometry_aware_cosine` | `0.00612418` | `0.00784304` | `0.00698361` |
+
+Interpretation:
+
+- Cosine JEPA loss has a small independent positive effect relative to its own loss-off matched control.
+- The effect is not strong enough to beat the clean `no_jepa_sparse` baseline under the planned gate.
+- Do not send `geometry_aware_cosine` to BFGS/Gate2.
+
+Variance-normalized MSE probe:
+
+- Output: `runs/jepa/jepa_test_redesign_20260522/case1a/gate1_varnorm/summary.md`
+- seed1 NRMSE: `0.0129376`
+- Decision: fails immediately; do not run seed2.
+
+### Dual-Target / H-JEPA-Style Test
+
+Implemented a narrow dual-target mode:
+
+```text
+L_jepa = L_local_patch + alpha * L_context_latent
+```
+
+Default test settings:
+
+- `target_mode=two-scale`
+- local target: `future-patches`, horizon `2`, `target_points=32`, cosine loss, target geometry enabled
+- context target: `multi-context-latent`, horizon `8`, teacher context steps `2`, stride `4`, cosine loss
+- `dual_context_alpha=0.25`
+- `lambda_dyn_consistency=0`
+
+Validation:
+
+- `python -m py_compile src/TestCase_1_jepa.py scripts/summarize_jepa_runs.py`
+- Adam20 dual-target smoke passed.
+- Adam1 old `points/no_jepa` regression smoke passed and preserved parameter count `8226`.
+
+Gate 1 results:
+
+- Output: `runs/jepa/jepa_test_redesign_20260522/case1a/gate1_dual_target/summary_gate1.md`
+- Case `1a`, sensor ratio `0.20`, seeds `1/2`, Adam `2000`, BFGS `0`.
+
+| Method | seed1 NRMSE | seed2 NRMSE | Mean NRMSE |
+| --- | ---: | ---: | ---: |
+| `no_jepa_sparse` | `0.00553467` | `0.00853027` | `0.00703247` |
+| `geometry_aware_cosine` | `0.00612418` | `0.00784304` | `0.00698361` |
+| `dual_target_two_scale` | `0.00951182` | `0.0144503` | `0.0119811` |
+
+Decision:
+
+- Dual-target fails the first positive-signal gate.
+- It is worse than both `no_jepa_sparse` and `geometry_aware_cosine`.
+- Do not run dual-target loss-off, seed0, BFGS, or Case `2/3`.
+- Treat this as negative evidence for the current lightweight H-JEPA-style objective, not as a rejection of every possible hierarchical JEPA design.
+
+### Main-Branch Handoff Recommendation
+
+For the upcoming `main`-branch full experiments:
+
+- Do not merge JEPA redesign code into `main` unless it is needed only for archived ablations.
+- Do not continue JEPA target/loss sweeps as the primary next experiment.
+- Carry forward these scientific conclusions:
+  - sparse/no-JEPA baseline is the strongest confirmed path;
+  - BFGS/near-convergence budgets are essential for fair ranking;
+  - current JEPA objectives are neutral to harmful under Case `1a`;
+  - AdamW and broad lambda/horizon sweeps are not justified without a new positive target design.
+
+Recommended next full-experiment direction on `main`:
+
+1. Establish clean `no_jepa_sparse` near-convergence baselines with Adam plus BFGS under the target case and sensor ratios.
+2. Expand sparse/no-JEPA full experiments before any additional JEPA redesign.
+3. Use paired seeds and same optimizer budgets as the JEPA branch for fair comparison.
+4. If main introduces new architecture changes, gate them first against `no_jepa_sparse`, not against a weak JEPA variant.
+5. Keep this branch as an ablation/negative-results reference for the other `ldnets` conversation.
