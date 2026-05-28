@@ -1388,3 +1388,90 @@ Recommended next full-experiment direction on `main`:
 3. Use paired seeds and same optimizer budgets as the JEPA branch for fair comparison.
 4. If main introduces new architecture changes, gate them first against `no_jepa_sparse`, not against a weak JEPA variant.
 5. Keep this branch as an ablation/negative-results reference for the other `ldnets` conversation.
+
+## 2026-05-28 Main no-JEPA Sparse Near-Convergence Matrix
+
+Goal: establish clean `main`-branch `no_jepa_sparse` / sparse encoder baselines with Adam plus BFGS before any further JEPA redesign.
+
+Setup:
+
+- Branch: `main`
+- Commit: `691eb42 Document JEPA branch handoff`
+- Output root: `runs/jepa/main_no_jepa_sparse_near_convergence_20260527/formal/`
+- Summary:
+  - `runs/jepa/main_no_jepa_sparse_near_convergence_20260527/formal/summary.md`
+  - `runs/jepa/main_no_jepa_sparse_near_convergence_20260527/formal/summary.csv`
+- Runner: `src/TestCase_1_jepa.py`
+- Matrix: cases `1a/1b/1c`, sensor ratios `1.0/0.5/0.2/0.1/0.05`, seeds `0/1/2`
+- Completed runs: `45/45`
+- Budget: Adam `4000`, BFGS `150`
+- Fixed method:
+  - `target_mode=points`
+  - `lambda_jepa=0.0`
+  - `lambda_dyn_consistency=0.0`
+  - `prediction_horizon=1`
+  - `target_time_strategy=next`
+  - `context_steps=1`
+  - `batch_samples=25`
+  - `learning_rate=0.01`
+  - `lambda_smooth=1e-4`
+  - `ema_decay=0.99`
+  - `skip_figures=true`
+
+Execution notes:
+
+- GPU workers used both RTX 4090 cards, one process per GPU.
+- Smoke runs for Case `1b/1c`, `sr=0.20`, `seed=0`, Adam `1`, BFGS `0` passed before the formal queue.
+- Full queue completed without failed or restarted formal runs.
+- Final GPU check after queue: both GPUs idle except display memory.
+
+Audit:
+
+- `metrics.json` count: `45`
+- Unique `(case, sensor_ratio, seed)` keys: `45`
+- Missing keys: none
+- Extra keys: none
+- Config/metrics checks: no errors
+- All formal configs have:
+  - `git_commit=691eb42`
+  - `git_status_short=""`
+  - `target_mode=points`
+  - `lambda_jepa=0.0`
+  - `lambda_dyn_consistency=0.0`
+  - finite `nrmse`, `pearson_dissimilarity`, `sensor_nrmse`, final train/valid losses
+
+Aggregate results:
+
+| Case | Sensor ratio | Count | NRMSE mean | NRMSE std | Pearson dissim. mean | Sensor NRMSE mean |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `1a` | `0.05` | `3` | `0.002351` | `0.000326` | `5.203e-05` | `0.002252` |
+| `1a` | `0.10` | `3` | `0.001915` | `0.000379` | `3.492e-05` | `0.001919` |
+| `1a` | `0.20` | `3` | `0.002098` | `0.000592` | `4.296e-05` | `0.002149` |
+| `1a` | `0.50` | `3` | `0.002065` | `0.000267` | `4.004e-05` | `0.002072` |
+| `1a` | `1.00` | `3` | `0.001908` | `0.000246` | `3.414e-05` | `0.001908` |
+| `1b` | `0.05` | `3` | `0.008945` | `0.001162` | `1.418e-03` | `0.008873` |
+| `1b` | `0.10` | `3` | `0.009007` | `0.000534` | `1.431e-03` | `0.009210` |
+| `1b` | `0.20` | `3` | `0.010434` | `0.002122` | `1.968e-03` | `0.010485` |
+| `1b` | `0.50` | `3` | `0.009467` | `0.001422` | `1.601e-03` | `0.009484` |
+| `1b` | `1.00` | `3` | `0.010199` | `0.001849` | `1.870e-03` | `0.010199` |
+| `1c` | `0.05` | `3` | `0.027666` | `0.001614` | `2.135e-02` | `0.028632` |
+| `1c` | `0.10` | `3` | `0.028291` | `0.000152` | `2.232e-02` | `0.028829` |
+| `1c` | `0.20` | `3` | `0.026721` | `0.001731` | `1.992e-02` | `0.026908` |
+| `1c` | `0.50` | `3` | `0.027803` | `0.001861` | `2.160e-02` | `0.027955` |
+| `1c` | `1.00` | `3` | `0.027193` | `0.001859` | `2.067e-02` | `0.027193` |
+
+Interpretation:
+
+- Case `1a`: `no_jepa_sparse` near-convergence is very strong. All ratios are around `0.0019-0.00235`, much better than the prior Adam-only sparse results and consistent with the handoff BFGS probe.
+- Case `1b`: strongest positive evidence. All ratios are around `0.00894-0.01043`, far better than the original LDNet reference around `0.0244`, with little degradation down to `5%` sensors.
+- Case `1c`: negative/limitation result for this exact setting. All ratios are around `0.0267-0.0283`, worse than the original Case `1c` reference around `0.0204`. This appears not to be a sensor-ratio issue because full-sensor and sparse ratios are similarly high.
+- The current verified contribution should be stated as strong for Case `1a/1b`; Case `1c` needs either author-style longer BFGS, case-specific architecture/regularization, or a different sparse initialization design before it can support a broad claim.
+
+Next action:
+
+1. Commit this documentation-only update.
+2. For Case `1c`, run a small diagnostic before more full matrices:
+   - original `TestCase_1.py --case 1c` with comparable `Adam4000+BFGS150` if feasible;
+   - sparse runner Case `1c`, `sr=1.0/0.2`, seed `0`, with larger BFGS such as `500/1000`;
+   - compare against original author-style `Adam200+BFGS1800`.
+3. For paper direction, prioritize sparse encoder robustness evidence on Case `1a/1b`; treat Case `1c` as a limitation until diagnosed.

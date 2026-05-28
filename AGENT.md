@@ -456,7 +456,14 @@ config.json
 已完成的可靠结论：
 
 - 原始 LDNets Case 1/2/3 复现路径可用，服务器 TensorFlow/GPU 环境可训练。
-- sparse observation encoder / inferred latent initialization 是当前最稳定的改进方向。
+- sparse observation encoder / inferred latent initialization 是当前最稳定的改进方向，但结论需要按 case 分层陈述。
+- Main `no_jepa_sparse` near-convergence matrix 已完成：Case `1a/1b/1c` x sensor ratio `1.0/0.5/0.2/0.1/0.05` x seed `0/1/2`，共 `45/45` runs，Adam `4000` + BFGS `150`。
+- Case `1a` 和 Case `1b` 支持 sparse encoder 主线：
+  - Case `1a` NRMSE 约 `0.0019-0.00235` across sensor ratios。
+  - Case `1b` NRMSE 约 `0.00894-0.01043` across sensor ratios，明显优于原始参考约 `0.0244`。
+- Case `1c` 是当前限制：
+  - NRMSE 约 `0.0267-0.0283` across sensor ratios，弱于原始参考约 `0.0204`。
+  - full-sensor 与 sparse ratios 同量级，问题更像 Case `1c` 的预算/架构/正则适配，而不是传感器比例本身。
 - Stage 1B 的 points / long-horizon patch JEPA 没有稳定超过 `no_jepa_sparse`。
 - Stage 1C 的 multi-context latent target 工程路径可用，但直接 latent MSE dynamics consistency 未带来正向精度收益。
 - 不能把当前 JEPA objective 作为已验证的主创新 claim。
@@ -477,24 +484,31 @@ MSE(z_rollout, stopgrad(z_teacher))
 下一步优先级：
 
 1. 不要直接扩展 Stage 1C dynamics objective 到 Case `2/3`。
-2. 如果继续 JEPA 方向，先做更小 gate：
+2. 不要直接宣称 sparse encoder 全 Case 改进；当前 verified claim 应限定为 Case `1a/1b` 的 sparse robustness。
+3. 先做 Case `1c` 诊断：
+   - original runner 与 sparse runner 使用相同 Adam/BFGS 预算对齐；
+   - sparse runner Case `1c`, `sr=1.0/0.2`, seed `0`, BFGS `500/1000` 小矩阵；
+   - 检查 Case `1c` 的 latent dimension、regularization `alpha_reg=2.7e-4`、signal conditioning 是否需要 sparse encoder 专门适配。
+4. 如果继续 JEPA 方向，先做更小 gate：
    - normalized latent MSE 或 cosine latent consistency；
    - learned projection head before latent consistency；
    - `lambda_dyn_consistency=0.001/0.003/0.01`；
    - delayed dynamics schedule after reconstruction stabilizes；
    - teacher windows based on sensor-observable context to reduce hidden-patch train/test mismatch。
-3. 如果追求短期论文稳定性，优先围绕 sparse observation encoder 展开：
+5. 如果追求短期论文稳定性，优先围绕 sparse observation encoder 展开：
    - sparse sensor ratio robustness；
    - seed stability；
-   - Case 1a/1b/1c transfer；
+   - Case `1a/1b` positive transfer；
+   - Case `1c` limitation and diagnostic；
    - 与 original LDNet Adam-only 和 author-budget Adam+BFGS 分开对比。
-4. Case `2/3` 后续实验应标注为 diagnostic，且必须保留 `no_jepa_sparse` 和 `current_points` 控制组。
+6. Case `2/3` 后续实验应标注为 diagnostic，且必须保留 `no_jepa_sparse` 和 `current_points` 控制组。
 
 短期目标：
 
-- 将 sparse encoder 的正向证据整理成清晰 baseline 表和曲线。
+- 将 sparse encoder 的 Case `1a/1b` 正向证据整理成清晰 baseline 表和曲线。
+- 对 Case `1c` 做预算/runner 对齐诊断，判断是否只是 BFGS 不足。
 - 对 JEPA objective 做一轮更弱/归一化目标的小规模 gate。
-- 决定论文主创新是否从 JEPA 调整为 sparse-observation latent initialization + diagnostic self-supervised objectives。
+- 决定论文主创新是否从 JEPA 调整为 sparse-observation latent initialization + diagnostic self-supervised objectives，并明确 Case `1c` 是 limitation 还是可修复问题。
 
 中期目标：
 
