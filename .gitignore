@@ -3,6 +3,7 @@ data.zip
 
 *.png
 !docs/figures/*.png
+!docs/figures/results/*.png
 logs/
 runs/
 checkpoints/

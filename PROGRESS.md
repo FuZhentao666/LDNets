@@ -1475,3 +1475,141 @@ Next action:
    - sparse runner Case `1c`, `sr=1.0/0.2`, seed `0`, with larger BFGS such as `500/1000`;
    - compare against original author-style `Adam200+BFGS1800`.
 3. For paper direction, prioritize sparse encoder robustness evidence on Case `1a/1b`; treat Case `1c` as a limitation until diagnosed.
+
+## 2026-05-29 GPU Multi-Process Smoke
+
+Goal: check whether one RTX 4090 can safely host more than one current Case `1` training process, because each formal sparse run uses low memory and moderate power.
+
+Context:
+
+- Ongoing formal Stage A runs:
+  - GPU 0: `runs/case1c_alignment_stageA_20260528/sparse_sr1p0_adam4000_bfgs150_seed0_gpu`
+  - GPU 1: `runs/case1c_alignment_stageA_20260528/sparse_sr0p2_adam4000_bfgs150_seed0_gpu`
+- Both runs use `src/TestCase_1_jepa.py`, Case `1c`, seed `0`, Adam `4000`, BFGS `150`, `lambda_jepa=0`, `lambda_dyn_consistency=0`, `target_mode=points`, `lambda_smooth=1e-4`, `batch_samples=25`, `skip_figures`.
+- Stable monitoring policy updated to `10-20` minute intervals unless a run completes or fails.
+
+Smoke command:
+
+```bash
+env -u PYTHONPATH CUDA_VISIBLE_DEVICES=0 \
+  LD_LIBRARY_PATH=/home/fzt/miniconda3/envs/ldnets-py39/lib:/opt/ros/humble/opt/rviz_ogre_vendor/lib:/opt/ros/humble/lib/x86_64-linux-gnu:/opt/ros/humble/lib \
+  MPLCONFIGDIR=/tmp/matplotlib-ldnets \
+  /home/fzt/miniconda3/envs/ldnets-py39/bin/python src/TestCase_1_jepa.py \
+  --case 1c \
+  --adam-epochs 1 \
+  --bfgs-epochs 0 \
+  --output-dir /tmp/ldnets-gpu0-multiproc-smoke \
+  --seed 999 \
+  --sensor-ratio 0.2 \
+  --lambda-jepa 0 \
+  --lambda-dyn-consistency 0 \
+  --target-mode points \
+  --lambda-smooth 0.0001 \
+  --batch-samples 25 \
+  --skip-figures
+```
+
+Observed result:
+
+- TensorFlow successfully created a GPU device for the second process on GPU 0 while the formal GPU 0 process was already active.
+- `nvidia-smi` during the overlap showed two compute Python PIDs on GPU 0:
+  - formal process: about `1768 MiB`
+  - smoke process: about `1000 MiB`
+  - total GPU 0 memory: about `3226 MiB / 24564 MiB`
+- GPU 1 simultaneously hosted one formal process at about `1768 MiB`.
+- Smoke completed successfully:
+  - elapsed seconds: `17.3`
+  - NRMSE is not meaningful because this was a one-epoch resource smoke.
+
+Conclusion:
+
+- One-card multi-process training is feasible for current Case `1` JEPA/sparse jobs.
+- Recommended default queue policy:
+  - use both cards;
+  - allow up to `2` long Case `1` processes per card when output directories are unique;
+  - consider `3-4` light Adam-only probes per card only after a short smoke;
+  - avoid stacking full-budget Case `2/3` BFGS jobs until their memory and CPU profile is measured.
+- Use host/external execution for GPU jobs. The default Codex sandbox may hide `/dev/nvidia*` and report `CUDA_ERROR_NO_DEVICE`; this is a sandbox namespace issue, not a TensorFlow install failure.
+
+## 2026-05-29 Stage A Case 1c Alignment Diagnostic
+
+Goal: determine whether the Case `1c` degradation near `NRMSE ~0.027` is caused by the sparse encoder method itself or by budget/convergence mismatch.
+
+Code changes made before the run:
+
+- `src/TestCase_1.py`
+  - added CLI overrides: `--num-latent-states`, `--dynamics-width`, `--reconstruction-width`, `--alpha-reg`, `--learning-rate`;
+  - metrics now record model dimensions, alpha regularization, data path, dt, normalization, GPU devices, and CUDA visibility.
+- `src/TestCase_1_jepa.py`
+  - added CLI overrides: `--num-latent-states`, `--dynamics-width`, `--reconstruction-width`, `--alpha-reg`;
+  - config now records latent/dynamics/reconstruction width and alpha regularization.
+- `scripts/summarize_jepa_runs.py`
+  - summary rows and aggregate groups now include `latent_dim`, `dynamics_width`, `reconstruction_width`, and `alpha_reg`.
+
+Formal runs:
+
+| Runner | Sensor ratio | Budget | GPU | NRMSE | Pearson dissim. | Sensor NRMSE | Elapsed |
+| --- | ---: | --- | --- | ---: | ---: | ---: | ---: |
+| original `TestCase_1.py` | full | Adam4000+BFGS150 | 0 | `2.4363e-02` | `1.6538e-02` | n/a | `1463.9s` |
+| original `TestCase_1.py` | full | Adam200+BFGS1800 | 0 | `2.0632e-02` | `1.1794e-02` | n/a | `1167.5s` |
+| sparse `TestCase_1_jepa.py` | `1.0` | Adam4000+BFGS150 | 0 | `2.6306e-02` | `1.9242e-02` | `2.6306e-02` | `3762.6s` |
+| sparse `TestCase_1_jepa.py` | `0.2` | Adam4000+BFGS150 | 1 | `2.7198e-02` | `2.0558e-02` | `2.7465e-02` | `4219.2s` |
+| sparse `TestCase_1_jepa.py` | `1.0` | Adam200+BFGS1800 | 1 | `1.8307e-02` | `9.2647e-03` | `1.8307e-02` | `12257.9s` |
+| sparse `TestCase_1_jepa.py` | `0.2` | Adam200+BFGS1800 | 0 | `2.1668e-02` | `1.3045e-02` | `2.1316e-02` | `12689.0s` |
+
+Notes:
+
+- The accidental CPU preliminary sparse `sr=1.0`, Adam4000+BFGS150 run is excluded from the formal table. The GPU rerun is the formal result.
+- Original author-style Case `1c` is reproduced closely: local `2.0632e-02` vs reference `2.039e-02`.
+- Original Adam4000+BFGS150 is weaker than author-style Adam200+BFGS1800, so Case `1c` is BFGS-sensitive.
+- Sparse Adam4000+BFGS150 reproduces the previous weak region around `0.026-0.027`.
+- Sparse Adam200+BFGS1800 changes the conclusion:
+  - full sensor improves to `1.8307e-02`, better than the original author-style run and the `2.039e-02` reference;
+  - `sr=0.2` improves to `2.1668e-02`, close to the reference but not clearly better.
+
+Interpretation:
+
+- Case `1c` is not evidence that sparse encoder is inherently worse.
+- The previous `~0.027` limitation is primarily a convergence/budget problem for this case.
+- The Stage A success criteria are partly met:
+  - full sensor `sr=1.0` no longer stalls near `0.027`;
+  - sparse `sr=0.2` is close to `0.0204` but still slightly weaker.
+- Sparse Case `1c` with author-style BFGS is much more expensive than original: about `3.4-3.5h` per sparse run in this setting.
+- Multi-process GPU packing is memory-safe for Case `1`, but full BFGS runs are CPU-bound; do not overpack BFGS jobs just because GPU memory is free.
+
+Next action:
+
+1. Do not jump directly to full latent `4/5/7 x sr=1.0/0.2 x BFGS1800`.
+2. First run sparse Case `1c` budget checkpoints:
+   - `sr=1.0/0.2`, seed `0`, latent `4`, BFGS `500/1000`, starting from the same Adam200 setup if implemented or by direct rerun if not.
+3. Then run a reduced latent sweep:
+   - latent `5/7`, `sr=1.0/0.2`, seed `0`, budget Adam200+BFGS1000 first;
+   - only extend winners to BFGS1800.
+4. After picking a budget/latent candidate, repeat seeds `1/2` before claiming Case `1c` improvement.
+
+## 2026-05-29 Positive Result Figures
+
+Goal: create reusable figures for the current positive sparse-encoder evidence and server scheduling conclusion.
+
+Script:
+
+- `scripts/plot_positive_results.py`
+
+Output directory:
+
+- `docs/figures/results/`
+
+Figures:
+
+| Figure | Purpose |
+| --- | --- |
+| `case1ab_sparse_sensor_sweep.png/.pdf` | Positive Case `1a/1b` sparse sensor robustness with mean/std across seeds and original references. |
+| `case1_sparse_sensor_sweep_all_cases.png/.pdf` | Case `1a/1b/1c` sparse near-convergence comparison, showing Case `1c` as the original short-BFGS limitation. |
+| `case1c_stageA_alignment.png/.pdf` | Stage A Case `1c` alignment result; long BFGS changes sparse `sr=1.0` from weak to positive. |
+| `case1c_stageA_runtime.png/.pdf` | Runtime cost of Stage A budgets, highlighting sparse long-BFGS cost. |
+| `gpu0_multiprocess_memory_smoke.png/.pdf` | One-GPU multi-process memory smoke, showing large RTX 4090 memory headroom. |
+
+Validation:
+
+- `scripts/plot_positive_results.py` completed successfully.
+- `python -m py_compile scripts/plot_positive_results.py src/TestCase_1.py src/TestCase_1_jepa.py scripts/summarize_jepa_runs.py` passed.

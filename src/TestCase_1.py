@@ -2,6 +2,7 @@
 """Reproducible runner for the ADR notebook experiments TestCase 1a/1b/1c."""
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -156,6 +157,22 @@ CASE_CONFIGS = {
 }
 
 
+def config_with_overrides(config, args):
+    config = copy.deepcopy(config)
+    overrides = {
+        "num_latent_states": args.num_latent_states,
+        "dynamics_width": args.dynamics_width,
+        "reconstruction_width": args.reconstruction_width,
+        "alpha_reg": args.alpha_reg,
+    }
+    applied = {}
+    for key, value in overrides.items():
+        if value is not None:
+            config[key] = value
+            applied[key] = value
+    return config, applied
+
+
 def configure_gpus():
     gpus = tf.config.list_physical_devices("GPU")
     for gpu in gpus:
@@ -164,6 +181,7 @@ def configure_gpus():
         except RuntimeError:
             pass
     print("TensorFlow physical GPUs:", gpus)
+    return [gpu.name for gpu in gpus]
 
 
 def load_case_data(config):
@@ -312,16 +330,20 @@ def save_loss_plot(opt, adam_epochs, output_path):
 def run_case(
     case_name,
     output_dir,
+    args,
     adam_epochs=None,
     bfgs_epochs=None,
+    learning_rate=1e-2,
     seed=0,
     batch_samples=25,
 ):
     start_time = time.time()
-    config = CASE_CONFIGS[case_name]
+    config, config_overrides = config_with_overrides(CASE_CONFIGS[case_name], args)
     output_dir.mkdir(parents=True, exist_ok=True)
     adam_epochs = config["adam_epochs"] if adam_epochs is None else adam_epochs
     bfgs_epochs = config["bfgs_epochs"] if bfgs_epochs is None else bfgs_epochs
+
+    gpu_names = configure_gpus()
 
     print(f"\n===== TestCase {case_name} =====")
     print("data:", config["data_path"])
@@ -364,7 +386,7 @@ def run_case(
 
     if adam_epochs > 0:
         print("training (Adam)...")
-        opt.optimize_keras(adam_epochs, tf.keras.optimizers.Adam(learning_rate=1e-2))
+        opt.optimize_keras(adam_epochs, tf.keras.optimizers.Adam(learning_rate=learning_rate))
     if bfgs_epochs > 0:
         print("training (BFGS)...")
         opt.optimize_BFGS(bfgs_epochs)
@@ -408,8 +430,19 @@ def run_case(
         "reference": config["reference"],
         "adam_epochs": adam_epochs,
         "bfgs_epochs": bfgs_epochs,
+        "learning_rate": learning_rate,
         "seed": seed,
         "batch_samples": batch_samples,
+        "data_path": str(config["data_path"]),
+        "dt": config["dt"],
+        "normalization": config["normalization"],
+        "config_overrides": config_overrides,
+        "model": {
+            "latent_dim": config["num_latent_states"],
+            "dynamics_width": config["dynamics_width"],
+            "reconstruction_width": config["reconstruction_width"],
+            "alpha_reg": config["alpha_reg"],
+        },
         "loss_train_last": float(opt.loss_train_history[-1].numpy()),
         "loss_valid_last": float(opt.loss_valid_history[-1].numpy()),
         "elapsed_seconds": elapsed_seconds,
@@ -418,6 +451,7 @@ def run_case(
         "git_commit": current_git_commit(),
         "git_status_short": current_git_status(),
         "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES", ""),
+        "gpu_devices": gpu_names,
     }
     result_path = output_dir / f"TestCase_{case_name}_metrics.json"
     result_path.write_text(json.dumps(result, indent=2) + "\n")
@@ -449,6 +483,7 @@ def parse_args():
         default=None,
         help="Override BFGS epochs for selected cases.",
     )
+    parser.add_argument("--learning-rate", type=float, default=1e-2)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
         "--batch-samples",
@@ -456,12 +491,15 @@ def parse_args():
         default=25,
         help="Split full-batch loss/prediction by sample count; use 0 for no split.",
     )
+    parser.add_argument("--num-latent-states", type=int, default=None)
+    parser.add_argument("--dynamics-width", type=int, default=None)
+    parser.add_argument("--reconstruction-width", type=int, default=None)
+    parser.add_argument("--alpha-reg", type=float, default=None)
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
-    configure_gpus()
 
     cases = ["1a", "1b", "1c"] if args.case == "all" else [args.case]
     output_dir = Path(args.output_dir).resolve()
@@ -469,8 +507,10 @@ def main():
         run_case(
             case_name,
             output_dir,
+            args,
             adam_epochs=args.adam_epochs,
             bfgs_epochs=args.bfgs_epochs,
+            learning_rate=args.learning_rate,
             seed=args.seed,
             batch_samples=args.batch_samples,
         )

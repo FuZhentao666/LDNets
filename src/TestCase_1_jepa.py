@@ -115,6 +115,10 @@ def build_parser():
     parser.add_argument("--learning-rate", type=float, default=1e-2)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--batch-samples", type=int, default=25)
+    parser.add_argument("--num-latent-states", type=int, default=None)
+    parser.add_argument("--dynamics-width", type=int, default=None)
+    parser.add_argument("--reconstruction-width", type=int, default=None)
+    parser.add_argument("--alpha-reg", type=float, default=None)
     parser.add_argument("--sensor-ratio", type=float, default=1.0)
     parser.add_argument("--sensor-count", type=int, default=None)
     parser.add_argument("--context-steps", type=int, default=1)
@@ -175,6 +179,22 @@ def build_parser():
 def condition_dim(config):
     problem = config["problem"]
     return len(problem["input_parameters"]) + len(problem["input_signals"])
+
+
+def config_with_overrides(config, args):
+    config = dict(config)
+    overrides = {
+        "num_latent_states": args.num_latent_states,
+        "dynamics_width": args.dynamics_width,
+        "reconstruction_width": args.reconstruction_width,
+        "alpha_reg": args.alpha_reg,
+    }
+    applied = {}
+    for key, value in overrides.items():
+        if value is not None:
+            config[key] = value
+            applied[key] = value
+    return config, applied
 
 
 def make_condition_sequence(dataset, config):
@@ -625,7 +645,7 @@ def run(args):
     gpu_names = configure_and_list_gpus()
     cuda_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "")
 
-    config = CASE_CONFIGS[args.case]
+    config, config_overrides = config_with_overrides(CASE_CONFIGS[args.case], args)
     if args.adam_epochs is None:
         args.adam_epochs = config["adam_epochs"]
 
@@ -754,6 +774,7 @@ def run(args):
         "end_time": end_time_text,
         "elapsed_seconds": elapsed_seconds,
         "args": vars(args) | {"output_dir": str(args.output_dir)},
+        "config_overrides": config_overrides,
         "git_commit": current_git_commit(),
         "git_status_short": current_git_status(),
         "cuda_visible_devices": cuda_visible_devices,
@@ -817,6 +838,9 @@ def run(args):
             "latent_dim": config["num_latent_states"],
             "embedding_dim": args.embedding_dim,
             "condition_dim": condition_dim(config),
+            "dynamics_width": config["dynamics_width"],
+            "reconstruction_width": config["reconstruction_width"],
+            "alpha_reg": config["alpha_reg"],
             "modules": [
                 "ObservationEncoder_E_phi",
                 "LatentTransition_T_theta",

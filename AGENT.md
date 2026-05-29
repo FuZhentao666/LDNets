@@ -519,3 +519,71 @@ MSE(z_rollout, stopgrad(z_teacher))
 
 - 形成 World-LDNet 论文级实验矩阵。
 - 明确哪些模块是 verified contribution，哪些只是 negative ablation 或 future work。
+
+## 7. GPU Scheduling Policy
+
+Current server:
+
+- GPU 0: NVIDIA GeForce RTX 4090, 24 GB.
+- GPU 1: NVIDIA GeForce RTX 4090, 24 GB.
+- Use host/external execution for TensorFlow GPU training. The default Codex sandbox can report `CUDA_ERROR_NO_DEVICE` even when the user's normal shell sees both GPUs.
+
+Working command pattern:
+
+```bash
+env -u PYTHONPATH CUDA_VISIBLE_DEVICES=<0-or-1> \
+  LD_LIBRARY_PATH=/home/fzt/miniconda3/envs/ldnets-py39/lib:/opt/ros/humble/opt/rviz_ogre_vendor/lib:/opt/ros/humble/lib/x86_64-linux-gnu:/opt/ros/humble/lib \
+  MPLCONFIGDIR=/tmp/matplotlib-ldnets \
+  /home/fzt/miniconda3/envs/ldnets-py39/bin/python ...
+```
+
+Observed one-GPU multi-process smoke:
+
+- Date: `2026-05-29`
+- While a formal Case `1c` sparse run was active on GPU 0, a second short `TestCase_1_jepa.py` process was started on the same GPU with `CUDA_VISIBLE_DEVICES=0`.
+- TensorFlow successfully created a GPU device for the second process.
+- `nvidia-smi` showed two compute Python processes on GPU 0:
+  - formal process: about `1768 MiB`
+  - smoke process: about `1000 MiB`
+  - total GPU 0 memory: about `3226 MiB / 24564 MiB`
+- The smoke run completed successfully in `17.3 s`.
+
+Practical conclusion:
+
+- Single-card multi-process training is feasible for the current Case `1` JEPA/sparse workloads.
+- Start with at most `2` long training processes per RTX 4090. This keeps memory far below capacity while avoiding excessive CPU/BFGS contention.
+- For light Adam-only probes, `3-4` processes per card may be possible, but test with a short smoke first and monitor power/utilization.
+- Do not pack Case `2/3` full-budget BFGS jobs aggressively; they should be treated as heavier reproduction baselines.
+- Always write each process to a unique output directory and record `CUDA_VISIBLE_DEVICES`, command hash, git status, seed, sensor ratio, budget, and model size.
+- Monitor every `10-20` minutes during stable long runs with `nvidia-smi` and targeted `ps -o pid,etime,pcpu,pmem,rss,stat,cmd -p <pid>`.
+
+## 8. Current Case 1c Alignment Finding
+
+Stage A Case `1c` alignment diagnostic completed on `2026-05-29`.
+
+Key results:
+
+- Original author-style `TestCase_1.py`, Adam200+BFGS1800:
+  - NRMSE `2.0632e-02`
+  - Pearson dissimilarity `1.1794e-02`
+  - This is close to the reference `2.039e-02 / 1.152e-02`.
+- Original short BFGS, Adam4000+BFGS150:
+  - NRMSE `2.4363e-02`
+  - This confirms Case `1c` is sensitive to long BFGS.
+- Sparse `TestCase_1_jepa.py`, Adam4000+BFGS150:
+  - `sr=1.0`: NRMSE `2.6306e-02`
+  - `sr=0.2`: NRMSE `2.7198e-02`
+  - This reproduces the weak `~0.027` region.
+- Sparse `TestCase_1_jepa.py`, Adam200+BFGS1800:
+  - `sr=1.0`: NRMSE `1.8307e-02`
+  - `sr=0.2`: NRMSE `2.1668e-02`
+
+Conclusion:
+
+- The earlier Case `1c` sparse weakness is mainly a convergence/budget issue, not a hard failure of sparse encoder.
+- With author-style BFGS, full-sensor sparse Case `1c` beats the original author-style baseline.
+- Sparse `sr=0.2` gets close to the Case `1c` reference but does not yet clearly beat it.
+- Next experiments should search for a cheaper convergence point before expanding latent sweeps:
+  - sparse Case `1c`, latent `4`, `sr=1.0/0.2`, BFGS `500/1000`;
+  - then latent `5/7` only under the best reduced budget;
+  - extend only winning candidates to BFGS1800 and seeds `1/2`.

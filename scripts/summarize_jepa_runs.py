@@ -39,6 +39,10 @@ ROW_FIELDS = [
     "bfgs_epochs",
     "learning_rate",
     "batch_samples",
+    "latent_dim",
+    "dynamics_width",
+    "reconstruction_width",
+    "alpha_reg",
     "warmup_epochs",
     "jepa_ramp_epochs",
     "lambda_jepa",
@@ -146,6 +150,10 @@ def row_from_metrics(metrics_path):
         "bfgs_epochs": get_arg(config, "bfgs_epochs"),
         "learning_rate": get_arg(config, "learning_rate"),
         "batch_samples": get_arg(config, "batch_samples"),
+        "latent_dim": config.get("model", {}).get("latent_dim"),
+        "dynamics_width": config.get("model", {}).get("dynamics_width"),
+        "reconstruction_width": config.get("model", {}).get("reconstruction_width"),
+        "alpha_reg": config.get("model", {}).get("alpha_reg"),
         "warmup_epochs": config.get("loss", {}).get("warmup_epochs"),
         "jepa_ramp_epochs": config.get("loss", {}).get("jepa_ramp_epochs"),
         "lambda_jepa": config.get("loss", {}).get("lambda_jepa"),
@@ -293,6 +301,10 @@ def write_markdown(rows, aggregate, path, group_fields):
         "sensor_ratio",
         "sensor_count",
         "batch_samples",
+        "latent_dim",
+        "dynamics_width",
+        "reconstruction_width",
+        "alpha_reg",
         "lambda_jepa",
         "lambda_dyn_consistency",
         "lambda_smooth",
@@ -360,6 +372,7 @@ def build_parser():
         "--aggregate-by",
         default=(
             "case,sensor_ratio,lambda_jepa,lambda_smooth,ema_decay,"
+            "latent_dim,dynamics_width,reconstruction_width,alpha_reg,"
             "target_mode,mask_ratio,prediction_horizon,target_points,target_time_strategy,"
             "lambda_dyn_consistency,teacher_context_steps,teacher_context_stride,"
             "multi_context_enabled,context_window_count,dyn_loss_type,"
