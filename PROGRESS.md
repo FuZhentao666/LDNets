@@ -1613,3 +1613,39 @@ Validation:
 
 - `scripts/plot_positive_results.py` completed successfully.
 - `python -m py_compile scripts/plot_positive_results.py src/TestCase_1.py src/TestCase_1_jepa.py scripts/summarize_jepa_runs.py` passed.
+
+## 2026-05-29 Case 1 Paper-Like Field Comparisons
+
+Goal: generate paper-like spatiotemporal FOM vs Sparse LDNet field plots for all three Case `1` experiments, with sparse sensor positions overlaid and absolute error shown as a separate field.
+
+Runner update:
+
+- `src/TestCase_1_jepa.py` now supports:
+  - `--save-fields`: writes `fields.npz` with denormalized FOM fields, reconstructed fields, sensor indices, times, and spatial points;
+  - `--paper-figure-samples`: selects test sample indices for `paper_like_comparison.png/.pdf`.
+
+Formal plotting runs:
+
+| Case | Sparse sensors | Budget | Seed | NRMSE | Pearson dissim. | Runtime | Output |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | --- |
+| `1a` | `0.05` | Adam4000+BFGS150 | 0 | `2.5730e-03` | `6.1453e-05` | `2408.8s` | `runs/field_comparisons_case1_20260529/case1a_sr005_seed0_adam4000_bfgs150` |
+| `1b` | `0.05` | Adam4000+BFGS150 | 0 | `1.0135e-02` | `1.8036e-03` | `4250.6s` | `runs/field_comparisons_case1_20260529/case1b_sr005_seed0_adam4000_bfgs150` |
+| `1c` | `0.20` | Adam200+BFGS1800 | 0 | `2.1961e-02` | `1.3385e-02` | `17092.4s` | `runs/field_comparisons_case1_20260529/case1c_sr020_seed0_adam200_bfgs1800` |
+
+Versioned figures:
+
+- `docs/figures/results/case1a_sparse_sr005_field_comparison.png/.pdf`
+- `docs/figures/results/case1b_sparse_sr005_field_comparison.png/.pdf`
+- `docs/figures/results/case1c_sparse_sr020_field_comparison.png/.pdf`
+
+Interpretation:
+
+- Case `1a`: 5% sensors still reconstructs the full spatiotemporal field closely; NRMSE `2.573e-03`.
+- Case `1b`: 5% sensors remains strong and better than the Case `1b` original-reference scale recorded earlier (`~2.44e-02`), with NRMSE `1.014e-02`.
+- Case `1c`: 20% sensors with author-style long BFGS reaches NRMSE `2.196e-02`, close to the Case `1c` original-reference scale (`~2.039e-02`) but not clearly better.
+- The Case `1c` display run is very expensive (`4.75h`) and should be treated as a cached visualization asset. Reuse `fields.npz` for future plotting instead of repeating BFGS1800.
+
+Validation:
+
+- All three `paper_like_comparison.png` files were visually inspected.
+- Each figure shows FOM, Sparse LDNet, and absolute error columns; white circle markers show sparse sensor locations at the initial time.

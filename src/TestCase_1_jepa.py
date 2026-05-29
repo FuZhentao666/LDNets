@@ -173,6 +173,16 @@ def build_parser():
     parser.add_argument("--jepa-ramp-epochs", type=int, default=20)
     parser.add_argument("--ema-decay", type=float, default=0.99)
     parser.add_argument("--skip-figures", action="store_true")
+    parser.add_argument(
+        "--save-fields",
+        action="store_true",
+        help="Save denormalized FOM/ROM test fields for later plotting.",
+    )
+    parser.add_argument(
+        "--paper-figure-samples",
+        default="0,1,2",
+        help="Comma-separated test sample indices used in paper-like field figures.",
+    )
     return parser
 
 
@@ -555,6 +565,112 @@ def save_loss_plot(history, adam_epochs, output_path):
     plt.close(fig)
 
 
+def parse_sample_indices(text, num_samples):
+    indices = []
+    for item in text.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        index = int(item)
+        if index < 0:
+            index += num_samples
+        if 0 <= index < num_samples:
+            indices.append(index)
+    if indices:
+        return indices
+    return list(range(min(3, num_samples)))
+
+
+def save_paper_like_comparison(
+    dataset,
+    out_fields_ref,
+    out_fields_app,
+    sensor_indices,
+    sample_indices,
+    output_path,
+    title,
+):
+    num_rows = len(sample_indices)
+    fig, axs = plt.subplots(
+        num_rows,
+        3,
+        figsize=(10.5, 2.45 * num_rows),
+        squeeze=False,
+        constrained_layout=True,
+    )
+    field_min = float(np.min(out_fields_ref[sample_indices, :, :, 0]))
+    field_max = float(np.max(out_fields_ref[sample_indices, :, :, 0]))
+    abs_error = np.abs(out_fields_app - out_fields_ref)
+    error_max = float(np.percentile(abs_error[sample_indices, :, :, 0], 99.0))
+    if error_max <= 0:
+        error_max = float(np.max(abs_error[sample_indices, :, :, 0]) + 1e-12)
+
+    times = np.asarray(dataset["times"])
+    for row, sample_index in enumerate(sample_indices):
+        points = np.asarray(dataset["points_full"][sample_index, :, :, 0])
+        time_grid = np.broadcast_to(times[:, None], points.shape)
+        ref = out_fields_ref[sample_index, :, :, 0]
+        app = out_fields_app[sample_index, :, :, 0]
+        err = np.abs(app - ref)
+        fields = [
+            (ref, "FOM", field_min, field_max, "viridis"),
+            (app, "Sparse LDNet", field_min, field_max, "viridis"),
+            (err, "|error|", 0.0, error_max, "magma"),
+        ]
+        for col, (values, label, vmin, vmax, cmap) in enumerate(fields):
+            mesh = axs[row, col].pcolormesh(
+                points,
+                time_grid,
+                values,
+                shading="auto",
+                vmin=vmin,
+                vmax=vmax,
+                cmap=cmap,
+            )
+            if col < 2:
+                sensor_x = points[0, sensor_indices]
+                sensor_t = np.full_like(sensor_x, times[0], dtype=float)
+                axs[row, col].scatter(
+                    sensor_x,
+                    sensor_t,
+                    s=12,
+                    marker="o",
+                    facecolors="none",
+                    edgecolors="white",
+                    linewidths=0.8,
+                )
+                axs[row, col].scatter(
+                    sensor_x,
+                    sensor_t,
+                    s=5,
+                    marker="o",
+                    color="black",
+                    linewidths=0.0,
+                )
+            axs[row, col].set_title(label if row == 0 else "")
+            axs[row, col].set_xlabel("x")
+            axs[row, col].set_ylabel("t" if col == 0 else "")
+            if col > 0:
+                axs[row, col].set_yticklabels([])
+            fig.colorbar(mesh, ax=axs[row, col], shrink=0.78, pad=0.015)
+        axs[row, 0].text(
+            0.02,
+            0.96,
+            f"sample {sample_index}",
+            transform=axs[row, 0].transAxes,
+            ha="left",
+            va="top",
+            fontsize=8,
+            color="white",
+            bbox={"facecolor": "black", "alpha": 0.35, "pad": 2, "edgecolor": "none"},
+        )
+
+    fig.suptitle(title)
+    for suffix in ("png", "pdf"):
+        fig.savefig(output_path.with_suffix(f".{suffix}"), dpi=220)
+    plt.close(fig)
+
+
 def scheduled_weight(epoch, target_value, warmup_epochs, ramp_epochs):
     if target_value <= 0:
         return 0.0
@@ -754,6 +870,32 @@ def run(args):
         )
         fig.savefig(args.output_dir / "comparison.png", dpi=200)
         plt.close(fig)
+        sample_indices = parse_sample_indices(
+            args.paper_figure_samples, dataset_tests["num_samples"]
+        )
+        save_paper_like_comparison(
+            dataset_tests,
+            out_fields_ref,
+            out_fields_app,
+            sampling.sensor_indices,
+            sample_indices,
+            args.output_dir / "paper_like_comparison",
+            (
+                f"Case {args.case} sparse encoder, "
+                f"sensor ratio={args.sensor_ratio:g}, "
+                f"NRMSE={nrmse:.3e}"
+            ),
+        )
+
+    if args.save_fields:
+        np.savez_compressed(
+            args.output_dir / "fields.npz",
+            out_fields_ref=out_fields_ref,
+            out_fields_app=out_fields_app,
+            sensor_indices=sampling.sensor_indices,
+            times=np.asarray(dataset_tests["times"]),
+            points_full=np.asarray(dataset_tests["points_full"]),
+        )
 
     elapsed_seconds = time.time() - start_time
     end_time_text = time.strftime("%Y-%m-%d %H:%M:%S %z")

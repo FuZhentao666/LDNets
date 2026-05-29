@@ -587,3 +587,26 @@ Conclusion:
   - sparse Case `1c`, latent `4`, `sr=1.0/0.2`, BFGS `500/1000`;
   - then latent `5/7` only under the best reduced budget;
   - extend only winning candidates to BFGS1800 and seeds `1/2`.
+
+## 9. Case 1 Field Figure Workflow
+
+Use `src/TestCase_1_jepa.py` with `--save-fields` and without `--skip-figures` when a paper-like field comparison is needed.
+
+Generated assets from `2026-05-29`:
+
+- Case `1a`, sparse `sr=0.05`, Adam4000+BFGS150:
+  - NRMSE `2.573e-03`
+  - `docs/figures/results/case1a_sparse_sr005_field_comparison.png/.pdf`
+- Case `1b`, sparse `sr=0.05`, Adam4000+BFGS150:
+  - NRMSE `1.014e-02`
+  - `docs/figures/results/case1b_sparse_sr005_field_comparison.png/.pdf`
+- Case `1c`, sparse `sr=0.20`, Adam200+BFGS1800:
+  - NRMSE `2.196e-02`
+  - `docs/figures/results/case1c_sparse_sr020_field_comparison.png/.pdf`
+
+Operational notes:
+
+- These plots show FOM, Sparse LDNet, and absolute error columns, with sparse sensor positions marked at the initial time.
+- Case `1a/1b` are strong positive sparse-encoder visual examples at only 5% sensors.
+- Case `1c` is an alignment example: 20% sensors is close to the original-reference scale, but the BFGS1800 display run took `17092.4s`.
+- Reuse the saved `fields.npz` under `runs/field_comparisons_case1_20260529/` for future figure restyling. Do not rerun Case `1c` BFGS1800 unless the model/config changes.
